@@ -1,0 +1,16 @@
+# Deku binary
+/deku
+
+# Build artifacts
+/tmp/
+cover.out
+cover.html
+
+# Environment
+.env
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
