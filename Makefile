@@ -1,3 +1,6 @@
+-include .env
+export
+
 .PHONY: build test vet fmt run clean cover dev install-dev all
 
 BINARY := deku
@@ -7,7 +10,7 @@ build:
 	go build -o $(BINARY) ./cmd/deku/
 
 test:
-	go test ./...
+	env -u DEKU_PROVIDER_ENDPOINT -u DEKU_PROVIDER_API_KEY -u DEKU_PROVIDER_MODEL go test ./...
 
 vet:
 	go vet ./...
@@ -22,7 +25,7 @@ clean:
 	rm -f $(BINARY) cover.out
 
 cover:
-	go test -coverprofile=cover.out ./...
+	env -u DEKU_PROVIDER_ENDPOINT -u DEKU_PROVIDER_API_KEY -u DEKU_PROVIDER_MODEL go test -coverprofile=cover.out ./...
 	go tool cover -html=cover.out -o cover.html
 	@echo "coverage report: cover.html"
 

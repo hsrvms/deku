@@ -26,6 +26,33 @@ Deku is in pre-release development. The current implementation target is [v0: Gi
 - [Domain glossary](CONTEXT.md)
 - [Engineering guide](AGENTS.md)
 
+## Usage
+
+Configure an OpenAI-compatible Provider with environment variables or
+`~/.deku/config.yaml`:
+
+```sh
+export DEKU_PROVIDER_ENDPOINT=https://api.openai.com/v1
+export DEKU_PROVIDER_API_KEY=your-api-key
+export DEKU_PROVIDER_MODEL=your-model
+```
+
+Start the interactive chat from a repository:
+
+```sh
+go run ./cmd/deku/
+```
+
+Deku prints the Session ID on startup. Sessions are stored as append-only JSONL
+files under `~/.deku/sessions/` and can be resumed with:
+
+```sh
+go run ./cmd/deku/ --resume <session-id>
+```
+
+The initial chat experience is a single-Step Turn without tools. Model text is
+streamed to the terminal as it arrives.
+
 ## License
 
 A license has not yet been selected.
