@@ -1,6 +1,11 @@
 # Deku binary
 /deku
 
+# Build artifacts
+/tmp/
+cover.out
+cover.html
+
 # IDE
 .idea/
 .vscode/
