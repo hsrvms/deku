@@ -1,0 +1,8 @@
+# Deku binary
+/deku
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
