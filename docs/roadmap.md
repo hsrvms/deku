@@ -22,7 +22,7 @@ The following ideas remain intentionally unscheduled until concrete use cases ju
 - Context Window summarization.
 - Repository Memory.
 - Agent-authored Extensions and their review or distribution workflow.
-- Planner and Capability abstractions.
+- TUI design guide: component conventions, keybinding policies, color and accessibility baseline.
 
 ## Documentation commitment
 
