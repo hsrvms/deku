@@ -6,6 +6,9 @@
 cover.out
 cover.html
 
+# Environment
+.env
+
 # IDE
 .idea/
 .vscode/
