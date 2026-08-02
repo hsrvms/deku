@@ -64,7 +64,7 @@ An adapter that translates the Agent's request into a specific model API's wire 
 Chat(ctx, model, system, messages, tools) → stream of events
 ```
 
-Deku ships with two providers: **OpenAI-compatible** (primary) and **Anthropic** (secondary). The Agent loop is provider-agnostic — it only depends on the interface, not on any specific API.
+Deku's initial Provider is **OpenAI-compatible**. Anthropic is a planned additional Provider. The Agent loop is provider-agnostic — it only depends on the interface, not on any specific API.
 
 ---
 

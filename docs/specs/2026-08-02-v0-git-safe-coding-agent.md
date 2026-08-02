@@ -1,0 +1,93 @@
+# v0: Git-Safe Coding-Agent Foundation
+
+**Status:** Ready for implementation
+
+**Scope:** Initial public release of Deku
+
+## Problem Statement
+
+Developers who primarily use OpenAI-compatible coding models through services such as OpenRouter, TokenRouter, and Qwen Cloud need a terminal-first coding agent that is small, understandable, and inexpensive in context use. Existing coding agents often depend on JavaScript or Python environments that bring heavy dependency trees and operational complexity.
+
+The developer needs an agent that can orient itself in a repository without spending repeated model Steps on mechanical file discovery, make self-validating file changes, and preserve a recoverable Git workflow without silently incorporating the developer's unfinished work.
+
+## Solution
+
+Deku v0 is a single terminal-first Go application that runs a persisted Agent Session against one OpenAI-compatible Provider. For each Turn, the Agent injects a compact file-tree Repository Map, obtains model Tool Calls, enforces Approval, executes built-in tools, and continues through additional Steps until it can return a final response.
+
+The Agent provides read, search, Edit, command, and Git capabilities. Every Edit is an atomic exact-match operation. Sessions are append-only JSONL logs. Git safety is opt-in: when Agent Commits are enabled, a clean repository receives an Agent Commit only after the completed Turn passes Validation. A dirty repository requires an explicit user choice to create a Checkpoint, stash existing work, continue with Agent Commits disabled, or cancel.
+
+The v0 acceptance benchmark is: given a clean Go repository of approximately 30 source files with one seeded failing test, Deku identifies and fixes the root cause, passes `go test ./...`, and creates an Agent Commit using Qwen through an OpenAI-compatible Provider within eight Provider calls and 60,000 total billed input-plus-output tokens.
+
+## User Stories
+
+1. As a developer, I want to start `deku` in a repository and enter a natural-language request, so that I can use a coding agent without managing a separate runtime environment.
+2. As a developer using an OpenAI-compatible routing service, I want to configure the Provider endpoint, credentials, and Model, so that I can use my preferred compatible coding model.
+3. As a developer, I want Deku to show a clear startup error when required configuration is absent or invalid, so that I can correct it before a Turn begins.
+4. As a developer, I want the Agent to receive a compact Repository Map automatically on each Step, so that it can find likely files without spending Tool Calls on trivial discovery.
+5. As a developer, I want the Agent to read actual file contents before changing them, so that a Repository Map never becomes mistaken for source code.
+6. As a developer, I want the Agent to list files and search repository text through Tools, so that it can investigate a problem without uncontrolled shell access.
+7. As a developer, I want an Edit to succeed only when all specified old text exists exactly once, so that a stale or ambiguous request cannot partially mutate my repository.
+8. As a developer, I want an unsuccessful Edit to leave every target file unchanged and report the mismatch to the Agent, so that the next Step can recover safely.
+9. As a developer, I want Read Tools to execute without a prompt and Write or Destructive Tools to require the appropriate Approval, so that routine inspection remains efficient without losing control of mutations.
+10. As a developer, I want to approve or reject a requested mutation before it runs, so that I retain authority over my repository.
+11. As a developer, I want every Session recorded append-only and resumable, so that a later Session can restore the conversation and Tool history without rewriting it.
+12. As a developer, I want to configure Agent Commits as off, ask, or on, so that Git automation matches my risk tolerance.
+13. As a developer who starts from a clean repository with Agent Commits enabled, I want Deku to create a commit containing only the Agent's validated changes from a completed Turn, so that I can review and revert discrete agent work.
+14. As a developer who starts with a dirty repository, I want Deku to show staged, unstaged, and untracked work and ask whether to create a Checkpoint, stash it, continue without Agent Commits, or cancel, so that existing work is never silently committed or hidden.
+15. As a developer, I want a stash choice to identify the precise stash created by Deku, so that later restoration does not rely on a mutable stash position.
+16. As a developer, I want Deku to pause if external repository changes occur during a Turn, so that an Agent Commit cannot absorb another actor's work.
+17. As a developer, I want incomplete work after interruption, Provider failure, budget exhaustion, or unsuccessful Validation to remain uncommitted, so that I can inspect it and choose whether to checkpoint or roll it back.
+18. As a developer, I want the final response to distinguish Validation results from Git recoverability, so that a successful commit is not mistaken for proof that the repository works.
+19. As a project maintainer, I want each accepted behavior change to update its specification and applicable public documentation, glossary terms, and ADRs, so that Deku remains understandable as an open-source project.
+20. As a project maintainer, I want the v0 benchmark to record Provider calls and reported token usage, so that Repository Map and prompt changes can be evaluated against a stable token-efficiency target.
+
+## Implementation Decisions
+
+- The **Agent module** is the primary deep module. Its interface accepts one user request in a Session and drives the entire Turn: prompt assembly, Provider interaction, Tool execution, Approval, continuation Steps, and final reporting. Callers do not coordinate model loops or Tool results.
+- The Agent distinguishes a **Turn** from a **Step** as defined in `CONTEXT.md`. A Turn may make multiple Provider calls; the acceptance benchmark limits Provider calls, not Turns.
+- The **Provider module** owns the existing `Chat(ctx, model, system, messages, tools)` interface and normalizes OpenAI-compatible streaming responses into Events. v0 supplies only the OpenAI-compatible adapter. The Anthropic adapter remains a separately specified future development.
+- The **Tool module** exposes built-in filesystem, repository search, Edit, command, and Git Tools through model-visible definitions and Agent-owned execution behavior. Native Tool Calls are the sole v0 action protocol; models that cannot reliably issue structured Tool Calls are unsupported in v0.
+- The **Edit module** accepts a path plus one or more exact search-and-replace changes. It validates all matches for presence and uniqueness before mutating any file, providing all-or-nothing behavior for one Edit request.
+- The **Approval module** owns the Read, Write, and Destructive classifications and pauses the Agent until the user decides. Per-tool and per-tier configuration may override the default classification.
+- The **Prompt and Repository Map modules** assemble model input. v0 injects a compact file-tree Repository Map on every Step. The prompt must explicitly state that the map is not source code; the Agent uses Read to obtain implementations. Tree-sitter parsing, symbol signatures, and relevance ranking are outside v0.
+- The **Session module** persists an immutable, append-only JSONL message log under the Deku home directory and reconstructs Session history when resumed.
+- The **Repository module** is a concrete deep module that owns Git inspection, dirty-tree choices, Checkpoints, change snapshots, Validation outcome recording, and Agent Commit selection. No general Repository interface is introduced in v0 because there is one Git implementation and no demonstrated second adapter.
+- Agent Commits are configured through `off`, `ask`, or `on`. With pre-existing repository changes, enabling Agent Commits requires an explicit Checkpoint, user-approved stash, choice to continue with commits disabled, or cancellation. Deku never stages all files indiscriminately and never commits or stashes pre-existing changes without approval.
+- A successful Agent Commit follows one completed Turn whose Agent-owned changes passed Validation. Failed or interrupted work remains uncommitted. A commit is recoverability, not proof of correctness.
+- v0 uses a single `deku` chat experience. Purpose-specific command experiences, planner, capability, memory, Extension loading, MCP process management, and Anthropic support are not part of v0.
+- MCP stdio is the accepted Extension protocol for future work. Built-in Tools remain in the Deku process; an Extension delivery specification will define MCP lifecycle, discovery, configuration, failures, and permissions before implementation.
+- Provider call count and reported input/output token usage are captured for the benchmark. A configurable runtime token-budget policy is outside v0; Providers that do not report sufficient usage cannot establish benchmark compliance.
+- Documentation is part of each completed change. Public behavior updates require the relevant specification and user documentation; resolved terminology updates `CONTEXT.md`; qualifying architectural trade-offs receive an ADR.
+
+## Testing Decisions
+
+- The primary test seam is the **Agent module interface**. Deterministic integration tests use a scripted Provider adapter and a temporary Git repository to observe a complete Turn: Repository Map injection, Tool execution, Approval, Session entries, Edit outcomes, Validation reporting, and Git state. This is the highest-value seam because it verifies the user-visible orchestration rather than internal loop mechanics.
+- The Provider has a second, adapter-specific contract seam at its existing `Chat` interface. Contract tests use a controlled OpenAI-compatible HTTP server to verify streaming Event normalization, Tool Call arguments, Tool-result continuation, malformed responses, cancellation, and provider errors. A manually run compatibility suite validates intended Qwen routes before listing them as supported.
+- The Repository module is exercised through the Agent seam using real temporary Git repositories, not mocks. Tests cover clean and dirty starts, Checkpoint approval, stash identity, disabled Agent Commits, cancellation, external change detection, Validation failure, interruption, and Agent Commit path selection.
+- Edit behavior is verified through completed Turns: exact replacements succeed; missing or repeated old text fails with no target mutation; and multiple requested replacements are atomic.
+- Session tests observe the persisted log through resume behavior and ensure that appending new messages never mutates existing records.
+- Benchmark tests use a committed seeded Go fixture repository of roughly 30 source files with one failing test. They verify the outcome (`go test ./...` passes and an Agent Commit exists) and record Provider-call and token metrics. Benchmark claims require a real compatible Provider run; deterministic tests do not claim model quality or billed-token compliance.
+- There are no prior code or test conventions in this greenfield repository. Tests will be written red-to-green in vertical slices, asserting externally observable behavior at the named seams rather than Tool internals or private implementation details.
+
+## Out of Scope
+
+- Anthropic Provider support.
+- Extension discovery, MCP server lifecycle, Extension installation, and agent-authored Extensions.
+- Tree-sitter Repository Maps, symbol signatures, and relevance ranking.
+- Context Window summarization.
+- Repository Memory, Planner, and Capability abstractions.
+- Purpose-specific `review`, `explain`, `commit`, `index`, `extensions`, `provider`, `doctor`, `session`, `memory`, and `repo` command experiences.
+- Textual or fenced-block Edit parsing as a fallback for models without reliable native Tool Calls.
+- A configurable runtime token-budget enforcement policy.
+- Universal Validation discovery for non-Go repositories.
+- Non-Git repository workflows.
+
+## Further Notes
+
+- ADR-0001 defines the hybrid Agent-driven Repository Map approach.
+- ADR-0002 reserves MCP stdio servers as the future Extension Tool protocol.
+- ADR-0003 defines native Tool Calls and exact-match Edits.
+- ADR-0004 defines opt-in Agent Commits and dirty-tree handling.
+- The v0 benchmark is a product quality gate, not a general guarantee that every task completes in eight Provider calls or 60,000 tokens.
+- The exact configuration schema, supported-model compatibility matrix, Repository Map exclusion policy, and user choice presentation require implementation-level design before their corresponding vertical slices. They must remain consistent with this specification and be documented when resolved.
+- Future releases must receive their own specifications rather than treating roadmap candidates as committed requirements.
