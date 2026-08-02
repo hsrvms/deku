@@ -1,0 +1,11 @@
+{
+  "name": "Deku Go development",
+  "dockerComposeFile": "docker-compose.yml",
+  "service": "workspace",
+  "runServices": ["workspace"],
+  "workspaceFolder": "/workspace",
+  "remoteUser": "dev",
+  "updateRemoteUserUID": true,
+  "shutdownAction": "stopCompose",
+  "overrideCommand": false
+}

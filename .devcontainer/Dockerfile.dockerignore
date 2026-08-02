@@ -1,0 +1,2 @@
+# The development image never COPYs project source; it is bind-mounted at runtime.
+**

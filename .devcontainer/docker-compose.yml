@@ -1,0 +1,35 @@
+name: ${COMPOSE_PROJECT_NAME:-deku-devcontainer}
+
+services:
+  workspace:
+    build:
+      context: ..
+      dockerfile: .devcontainer/Dockerfile
+      args:
+        USER_UID: ${DEV_UID:-1000}
+        USER_GID: ${DEV_GID:-1000}
+    init: true
+    command: sleep infinity
+    volumes:
+      - ..:/workspace
+      - type: bind
+        source: ${HOME}/.pi
+        target: /home/dev/.pi
+        bind:
+          create_host_path: false
+      - type: bind
+        source: ${HOME}/.ssh
+        target: /home/dev/.ssh
+        read_only: true
+      - type: bind
+        source: ${HOME}/.config/gh
+        target: /home/dev/.config/gh
+        read_only: true
+        bind:
+          create_host_path: false
+      - go-mod-cache:/go/pkg/mod
+      - go-build-cache:/go/build-cache
+
+volumes:
+  go-mod-cache:
+  go-build-cache:
