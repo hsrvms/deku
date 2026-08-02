@@ -51,6 +51,7 @@ RUN apt-get update \
         gcc \
         gh \
         git \
+        vim \
         iproute2 \
         iputils-ping \
         jq \
