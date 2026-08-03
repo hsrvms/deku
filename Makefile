@@ -1,7 +1,7 @@
 -include .env
 export
 
-.PHONY: build test test-race vet mod-verify fmt fmt-check lint run clean cover dev install-dev ci all
+.PHONY: build test test-race vet mod-verify fmt fmt-check lint run clean cover dev install-dev release-dry-run ci all
 
 BINARY := deku
 MODULE := github.com/hsrvms/deku
@@ -56,6 +56,9 @@ dev:
 install-dev:
 	@GOBIN=$${GOBIN:-$$HOME/go/bin} go install github.com/air-verse/air@latest
 	@echo "air installed — ensure $${GOBIN:-$$HOME/go/bin} is in your PATH"
+
+release-dry-run:
+	./scripts/release-dry-run.sh $${VERSION:-0.0.0}
 
 ci: fmt-check mod-verify vet test test-race lint build
 

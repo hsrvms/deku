@@ -158,3 +158,93 @@ A Git commit containing only changes attributed to the Agent during one successf
 A single unit of output from a Provider during a model call. Events are typed: `TextDelta` (a fragment of model text), `ToolCall` (a complete tool invocation), `ToolCallDelta` (a fragment of a tool call being streamed), `Done` (end of response), `Error` (failure).
 
 The Agent dispatches events to the display or to the tool execution buffer based on their type.
+
+---
+
+## Release
+
+A named distribution of Deku tied to one Source Revision. A Release consists of Release Artifacts and Release Metadata; publication status does not change which source or artifact bytes belong to it.
+
+---
+
+## Release Version
+
+The human-facing identifier used to refer to a Release. A Release Version is distinct from the Source Revision and from any individual Build.
+
+---
+
+## Source Revision
+
+The exact, immutable state of Deku's source from which a Release is produced. All artifacts belonging to one Release come from the same Source Revision.
+
+---
+
+## Build
+
+The production of an artifact from a Source Revision and declared build inputs. A Build produces an output; it is not itself a Release and does not, by itself, establish that the output is supported.
+
+---
+
+## Release Artifact
+
+A file distributed to users as part of a Release, such as an executable or an archive for a Target Platform. Checksums, provenance, attestations, and Release Notes are Release Metadata rather than executable distribution artifacts.
+
+---
+
+## Target Platform
+
+The operating-system and processor-architecture combination for which a Release Artifact is produced.
+
+---
+
+## Supported Platform
+
+A Target Platform for which Deku publicly promises a usable Release Artifact and compatibility within the stated support boundary. Producing an artifact for a Target Platform does not make that platform supported.
+
+---
+
+## Release Metadata
+
+Information published with a Release that describes or helps verify it, including checksums, provenance, attestations, and Release Notes.
+
+---
+
+## Checksum
+
+A digest calculated from the exact bytes of a Release Artifact. A Checksum can detect accidental or incomplete transfer, but does not establish who produced the artifact or whether its contents are correct.
+
+---
+
+## Provenance
+
+Information describing where and how a Release Artifact was produced, including its Source Revision and relevant build inputs. Provenance explains an artifact's origin; it is not by itself a guarantee of correctness or authenticity.
+
+---
+
+## Attestation
+
+A verifiable assertion about a Release Artifact or its Provenance issued by an identified signer or authority. An Attestation demonstrates that the assertion was issued and has not been altered; it does not make unsupported claims in the assertion true.
+
+---
+
+## Release Notes
+
+Human-readable information accompanying a Release that explains its user-relevant changes, limitations, and known concerns.
+
+---
+
+## Release Publication
+
+The act of making a Release and its Release Artifacts available to users. Publication is distinct from Build and does not alter the identity or contents of the Release.
+
+---
+
+## Withdrawal
+
+The removal of a published Release or Release Artifact from recommended or available distribution without changing the historical fact that it was published or altering copies already obtained by users.
+
+---
+
+## Revocation
+
+A security declaration that a Release or Release Artifact must no longer be trusted. Revocation is stronger and more specific than ordinary Withdrawal because it communicates a loss of trust, not merely a distribution or maintenance decision.

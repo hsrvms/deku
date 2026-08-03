@@ -3,6 +3,8 @@
 
 # Build artifacts
 /tmp/
+/build/
+/dist/
 cover.out
 cover.html
 

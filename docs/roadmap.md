@@ -6,6 +6,10 @@ This roadmap describes the currently accepted product horizon. It is deliberatel
 
 A terminal-first Go coding agent for OpenAI-compatible providers. It establishes the Agent loop, built-in tools, exact-match Edits, approval, JSONL Sessions, a compact file-tree Repository Map, and opt-in Agent Commits. See the [v0 specification](specs/2026-08-02-v0-git-safe-coding-agent.md).
 
+## Release and distribution
+
+Accepted work for versioned CLI distribution is specified in [Release and CD publishing](specs/2026-08-03-release-cd-publishing.md). It covers protected-tag Releases, supported-platform archives, checksums, provenance attestations, protected publication approval, and withdrawal or revocation guidance. It does not make the current pre-release implementation ready for daily use until the workflow is validated by a protected first Release.
+
 ## v1 — Repository intelligence and extension delivery
 
 Candidate scope, pending its own specification:
