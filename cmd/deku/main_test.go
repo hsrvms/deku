@@ -11,6 +11,28 @@ import (
 	"testing"
 )
 
+func TestRunPrintsVersionWithoutProviderConfiguration(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("DEKU_PROVIDER_ENDPOINT", "")
+	t.Setenv("DEKU_PROVIDER_API_KEY", "")
+	t.Setenv("DEKU_PROVIDER_MODEL", "")
+
+	var stdout, stderr bytes.Buffer
+	if status := run([]string{"--version"}, strings.NewReader(""), &stdout, &stderr); status != 0 {
+		t.Fatalf("run() status = %d, stderr = %q", status, stderr.String())
+	}
+	if got, want := stdout.String(), "dev\n"; got != want {
+		t.Fatalf("stdout = %q, want %q", got, want)
+	}
+	if stderr.Len() != 0 {
+		t.Fatalf("stderr = %q, want empty", stderr.String())
+	}
+	if _, err := os.Stat(home + "/.deku/sessions"); !os.IsNotExist(err) {
+		t.Fatalf("sessions directory error = %v, want it not to be created", err)
+	}
+}
+
 func TestRunStartsConversationAndStreamsResponse(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)

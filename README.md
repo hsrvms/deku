@@ -50,6 +50,12 @@ files under `~/.deku/sessions/` and can be resumed with:
 go run ./cmd/deku/ --resume <session-id>
 ```
 
+Print the embedded build version without loading Provider configuration:
+
+```sh
+go run ./cmd/deku/ --version
+```
+
 The chat experience supports multi-Step Turns with read-only `ls`, `read`, and
 `grep` tools. Model text is streamed to the terminal as it arrives; tool calls
 and results are retained in the append-only Session transcript.

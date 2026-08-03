@@ -18,3 +18,4 @@ Deku treats specifications as maintained project documentation, not disposable p
 ## Current specifications
 
 - [v0: Git-safe coding-agent foundation](2026-08-02-v0-git-safe-coding-agent.md)
+- [Release and CD publishing](2026-08-03-release-cd-publishing.md)

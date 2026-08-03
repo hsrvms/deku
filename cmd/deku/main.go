@@ -15,6 +15,7 @@ import (
 	"github.com/hsrvms/deku/config"
 	"github.com/hsrvms/deku/provider"
 	"github.com/hsrvms/deku/session"
+	"github.com/hsrvms/deku/version"
 )
 
 func main() {
@@ -25,6 +26,7 @@ func run(args []string, input io.Reader, output, errorOutput io.Writer) int {
 	flags := flag.NewFlagSet("deku", flag.ContinueOnError)
 	flags.SetOutput(errorOutput)
 	resumeID := flags.String("resume", "", "resume an existing Session by ID")
+	showVersion := flags.Bool("version", false, "print the Deku version")
 	if err := flags.Parse(args); err != nil {
 		return 2
 	}
@@ -33,6 +35,12 @@ func run(args []string, input io.Reader, output, errorOutput io.Writer) int {
 			return 1
 		}
 		return 2
+	}
+	if *showVersion {
+		if _, err := fmt.Fprintln(output, version.Current()); err != nil {
+			return 1
+		}
+		return 0
 	}
 
 	cfg, err := config.Load()
