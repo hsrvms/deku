@@ -200,8 +200,11 @@ func (p *OpenAICompatible) Chat(ctx context.Context, model, system string, messa
 		return nil, fmt.Errorf("provider request: %w", err)
 	}
 	if response.StatusCode < http.StatusOK || response.StatusCode >= http.StatusMultipleChoices {
-		defer response.Body.Close()
-		return nil, providerHTTPError(response)
+		providerErr := providerHTTPError(response)
+		if closeErr := response.Body.Close(); closeErr != nil {
+			return nil, errors.Join(providerErr, fmt.Errorf("close provider error response body: %w", closeErr))
+		}
+		return nil, providerErr
 	}
 
 	events := make(chan Event, 16)
@@ -393,7 +396,11 @@ type streamAPIError struct {
 
 func consumeSSE(ctx context.Context, body io.ReadCloser, events chan Event) {
 	defer close(events)
-	defer body.Close()
+	defer func() {
+		if err := body.Close(); err != nil {
+			sendStreamError(ctx, events, fmt.Errorf("close provider stream: %w", err))
+		}
+	}()
 
 	state := streamState{
 		calls:     make(map[int]*ToolCall),
