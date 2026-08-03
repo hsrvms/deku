@@ -173,7 +173,7 @@ func (s *Store) Create() (*Session, error) {
 }
 
 // Resume opens an existing Session and reconstructs its complete message log.
-func (s *Store) Resume(id string) (*Session, error) {
+func (s *Store) Resume(id string) (resumed *Session, err error) {
 	if s == nil {
 		return nil, errors.New("session store is nil")
 	}
@@ -186,7 +186,19 @@ func (s *Store) Resume(id string) (*Session, error) {
 	if err != nil {
 		return nil, fmt.Errorf("open session %q: %w", id, err)
 	}
-	defer file.Close()
+	defer func() {
+		closeErr := file.Close()
+		if closeErr == nil {
+			return
+		}
+		closeErr = fmt.Errorf("close session %q: %w", id, closeErr)
+		if err == nil {
+			resumed = nil
+			err = closeErr
+			return
+		}
+		err = errors.Join(err, closeErr)
+	}()
 
 	info, err := file.Stat()
 	if err != nil {

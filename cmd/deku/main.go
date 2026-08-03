@@ -29,27 +29,37 @@ func run(args []string, input io.Reader, output, errorOutput io.Writer) int {
 		return 2
 	}
 	if flags.NArg() != 0 {
-		fmt.Fprintf(errorOutput, "deku: unexpected argument %q\n", flags.Arg(0))
+		if err := writeError(errorOutput, "deku: unexpected argument %q\n", flags.Arg(0)); err != nil {
+			return 1
+		}
 		return 2
 	}
 
 	cfg, err := config.Load()
 	if err != nil {
-		fmt.Fprintf(errorOutput, "deku: %v\n", err)
+		if writeErr := writeError(errorOutput, "deku: %v\n", err); writeErr != nil {
+			return 1
+		}
 		return 1
 	}
 	store, err := session.DefaultStore()
 	if err != nil {
-		fmt.Fprintf(errorOutput, "deku: initialize sessions: %v\n", err)
+		if writeErr := writeError(errorOutput, "deku: initialize sessions: %v\n", err); writeErr != nil {
+			return 1
+		}
 		return 1
 	}
 
 	conversation, err := loadConversation(store, *resumeID)
 	if err != nil {
-		fmt.Fprintf(errorOutput, "deku: %v\n", err)
+		if writeErr := writeError(errorOutput, "deku: %v\n", err); writeErr != nil {
+			return 1
+		}
 		return 1
 	}
-	fmt.Fprintf(errorOutput, "deku: session %s\n", conversation.ID)
+	if err := writeError(errorOutput, "deku: session %s\n", conversation.ID); err != nil {
+		return 1
+	}
 
 	model := provider.NewOpenAICompatible(cfg.Provider.Endpoint, cfg.Provider.APIKey)
 	runner := agent.New(model, cfg.Provider.Model, conversation, output)
@@ -76,7 +86,9 @@ func runConversation(runner agent.Runner, input io.Reader, output, errorOutput i
 	scanner.Buffer(make([]byte, 64*1024), 10*1024*1024)
 	for {
 		if _, err := io.WriteString(output, "deku> "); err != nil {
-			fmt.Fprintf(errorOutput, "deku: display prompt: %v\n", err)
+			if writeErr := writeError(errorOutput, "deku: display prompt: %v\n", err); writeErr != nil {
+				return 1
+			}
 			return 1
 		}
 		if !scanner.Scan() {
@@ -88,17 +100,28 @@ func runConversation(runner agent.Runner, input io.Reader, output, errorOutput i
 		}
 
 		if _, err := runner.Turn(context.Background(), request); err != nil {
-			fmt.Fprintf(errorOutput, "deku: %v\n", err)
+			if writeErr := writeError(errorOutput, "deku: %v\n", err); writeErr != nil {
+				return 1
+			}
 			continue
 		}
 		if _, err := io.WriteString(output, "\n"); err != nil {
-			fmt.Fprintf(errorOutput, "deku: display response separator: %v\n", err)
+			if writeErr := writeError(errorOutput, "deku: display response separator: %v\n", err); writeErr != nil {
+				return 1
+			}
 			return 1
 		}
 	}
 	if err := scanner.Err(); err != nil {
-		fmt.Fprintf(errorOutput, "deku: read input: %v\n", err)
+		if writeErr := writeError(errorOutput, "deku: read input: %v\n", err); writeErr != nil {
+			return 1
+		}
 		return 1
 	}
 	return 0
+}
+
+func writeError(output io.Writer, format string, args ...any) error {
+	_, err := fmt.Fprintf(output, format, args...)
+	return err
 }

@@ -1,0 +1,6 @@
+# Require the repository owner to review changes to automation and dependency policy.
+.github/ @hsrvms
+.devcontainer/ @hsrvms
+Makefile @hsrvms
+go.mod @hsrvms
+go.sum @hsrvms

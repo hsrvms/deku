@@ -54,6 +54,17 @@ The chat experience supports multi-Step Turns with read-only `ls`, `read`, and
 `grep` tools. Model text is streamed to the terminal as it arrives; tool calls
 and results are retained in the append-only Session transcript.
 
+## Development
+
+Run the repository's complete local validation suite with:
+
+```sh
+make ci
+```
+
+This checks formatting, module integrity, static analysis, tests (including the
+race detector), and the CLI build. Provider credentials are not required.
+
 ## License
 
 A license has not yet been selected.
