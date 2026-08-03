@@ -6,7 +6,7 @@ The canonical vocabulary for Deku. This file defines precise meanings for every 
 
 ## Agent
 
-The core loop that mediates between the user, the model, and the tools. The Agent receives user input, assembles the system prompt, calls the model, parses the response, executes tool calls, and reports results. The Agent is the only component that orchestrates — it does not delegate orchestration to the model or to tools.
+The core loop that mediates between the user, the model, and the tools. The Agent receives user input, assembles the system prompt, calls the model, parses the response, executes tool calls, and reports results. The Agent is the only module that orchestrates — it does not delegate orchestration to the model or to Tools.
 
 **The Agent is not the model, not the user, and not a tool. It is the loop that connects them.**
 
@@ -26,9 +26,27 @@ One interaction with the Model within a Turn, including any tool requests it pro
 
 ## Session
 
-A persisted conversation between the user and the Agent. A session has a unique ID, a creation timestamp, and a full message log (user messages, model responses, tool calls, tool results). Sessions are append-only and immutable — once a message is written, it is never modified.
+A persisted conversation between the user and the Agent. A Session has a unique ID, a creation timestamp, and a full Transcript. Sessions are append-only and immutable — once a Transcript entry is written, it is never modified.
 
-Sessions are stored as JSONL files in `~/.deku/sessions/`. Resuming a session restores the full message log. The context window strategy determines what subset of the log is sent to the model on each Step.
+Sessions are stored as JSONL files in `~/.deku/sessions/`. Resuming a Session restores the full Transcript. The context window strategy determines what subset of the Transcript is sent to the model on each Step.
+
+---
+
+## Transcript
+
+The ordered history of user requests, model responses, Tool Calls, and Tool results within a Session. A Transcript preserves the information needed to continue a Turn and resume a Session without losing work.
+
+---
+
+## Tool Call
+
+A request from the Model for the Agent to execute a named Tool with structured arguments.
+
+---
+
+## Tool Result
+
+The recorded outcome of a Tool Call, returned by the Agent to the Model and retained in the Transcript.
 
 ---
 
@@ -41,7 +59,7 @@ A function the Agent can invoke on behalf of the model. Every tool has:
 
 Tools are the only way the model can affect the world outside its context window. Tools are not the model's subroutines — they are capabilities the Agent grants to the model.
 
-**Built-in tools** ship with Deku. **Extension tools** are contributed by extensions and follow the same interface.
+**Built-in Tools** ship with Deku. **Extension Tools** are contributed by Extensions and follow the same interface.
 
 ---
 
@@ -64,7 +82,7 @@ An adapter that translates the Agent's request into a specific model API's wire 
 Chat(ctx, model, system, messages, tools) → stream of events
 ```
 
-Deku's initial Provider is **OpenAI-compatible**. Anthropic is a planned additional Provider. The Agent loop is provider-agnostic — it only depends on the interface, not on any specific API.
+Deku's initial Provider is **OpenAI-compatible**. Anthropic is a planned additional Provider. The Agent loop is provider-agnostic — it only depends on the interface, not on any specific wire protocol.
 
 ---
 
@@ -120,6 +138,12 @@ A user-approved Git commit that preserves existing work as a recoverable boundar
 ## Validation
 
 The assessment that changes satisfy the repository's applicable checks. Validation detects failures; it does not preserve work or provide rollback.
+
+---
+
+## Repository
+
+The working tree and version history in which the Agent performs work. A Repository includes pre-existing work, Agent-owned changes, and the Git state used for Checkpoints, Validation, and Agent Commits.
 
 ---
 

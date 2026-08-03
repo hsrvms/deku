@@ -30,16 +30,27 @@ Do not add Anthropic support, MCP Extension loading, tree-sitter maps, Context W
 
 Organize code by the following domain modules, not generic technical layers:
 
-- **Agent:** the primary deep module. It owns a complete Turn: prompt assembly, Provider Steps, Tool execution, Approval, continuation, and final response. Callers must not coordinate model loops.
+- **Agent:** the primary deep module. It owns a complete Turn: prompt assembly, Provider Steps, Tool execution, Approval, continuation, Validation coordination, and final response. Callers submit a request and render results; they must not coordinate model loops or safety transitions.
 - **Provider:** owns the `Chat(ctx, model, system, messages, tools)` interface and translates provider streaming responses into Events. v0 has one OpenAI-compatible adapter.
-- **Tool:** defines model-visible Tool definitions and executes built-in tools. Tool Calls are the sole v0 action protocol.
+- **Tool:** owns model-visible Tool definitions, argument validation, dispatch, and normalized Tool results for built-in Tools. Tool Calls are the sole v0 action protocol.
 - **Edit:** owns atomic exact-match replacement. Validate every match for presence and uniqueness before changing any file.
 - **Approval:** owns Read, Write, and Destructive classifications and synchronous user decisions.
 - **Prompt and Repository Map:** build input for every Step. The Repository Map is orientation only, never source code; the Agent must Read real content before an Edit.
-- **Session:** owns append-only JSONL persistence and resume behavior.
-- **Repository:** owns Git inspection, dirty-tree choices, Checkpoints, snapshots, Validation outcomes, and Agent Commit selection. Use real Git behavior; do not introduce a general Repository interface in v0 without a demonstrated second adapter.
+- **Session:** owns the complete append-only JSONL Transcript and resume behavior. It does not depend on Provider wire types.
+- **Repository:** owns Git inspection, dirty-tree choices, Checkpoints, snapshots, change attribution, Validation outcomes, and Agent Commit selection. Use real Git behavior; do not introduce a general Repository interface in v0 without a demonstrated second adapter.
 
 Keep module interfaces small and deep. Add a seam only where behavior genuinely varies or where it is the agreed test seam. Prefer one high-value seam over multiple shallow abstractions.
+
+### Deepening order
+
+Implement the remaining v0 architecture in this order:
+
+1. **Protect the Agent seam.** Make the Agent the sole owner of Turn and Step continuation before adding more Tool behavior.
+2. **Complete the Session Transcript.** Persist user, assistant, Tool Call, and Tool Result history before Tool continuation depends on resume.
+3. **Deepen Tool execution.** Keep definitions, argument validation, dispatch, and normalized results in Tool; keep Edit and Approval focused on their own domain rules.
+4. **Deepen Repository safety.** Keep dirty-tree choices, Checkpoints, snapshots, Validation, external-change detection, and Agent Commit attribution in Repository.
+
+The Repository Map remains a Prompt concern inside the Agent's Step assembly and does not create a second orchestration path. This order is an implementation constraint, not an expansion of v0 scope.
 
 ## Domain Rules
 
@@ -60,7 +71,7 @@ Do not silently commit, stash, stage, overwrite, or otherwise absorb pre-existin
 - Keep infrastructure out of domain logic. The Agent depends on the Provider interface, never a provider-specific wire format.
 - Validate all external input at module interfaces. Return contextual, explicit errors; never silently discard failures.
 - Write tests red-to-green in vertical slices. Test externally observable behavior through agreed seams, not private implementation details.
-- The primary v0 test seam is the Agent module interface, using scripted Provider behavior and real temporary Git repositories. The Provider `Chat` interface is the adapter-specific contract seam.
+- The primary v0 test seam is the Agent module interface, using scripted Provider behavior and real temporary Git repositories. Tests should observe a complete Turn: Repository Map injection, Tool execution, Approval, complete Session Transcript entries, Edit outcomes, Validation reporting, and Git state. The Provider `Chat` interface is the adapter-specific contract seam.
 - Run `gofmt`, `go vet ./...`, static analysis configured by the repository, and affected tests before declaring work complete. Once the project has a Go module, run `go test ./...` unless the task makes that impractical, and report any skipped or failing checks.
 
 ## Documentation Is Part of Done
