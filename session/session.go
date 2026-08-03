@@ -20,14 +20,25 @@ import (
 const (
 	RoleUser      = "user"
 	RoleAssistant = "assistant"
+	RoleTool      = "tool"
 
 	sessionIDLayout = "20060102T150405.000000000Z"
 )
 
+// ToolCall is the provider-independent transcript form of a model Tool Call.
+type ToolCall struct {
+	ID        string `json:"id"`
+	Name      string `json:"name"`
+	Arguments string `json:"arguments"`
+}
+
 // Message is one immutable entry in a Session's conversation log.
 type Message struct {
-	Role    string `json:"role"`
-	Content string `json:"content"`
+	Role       string     `json:"role"`
+	Content    string     `json:"content"`
+	Name       string     `json:"name,omitempty"`
+	ToolCallID string     `json:"tool_call_id,omitempty"`
+	ToolCalls  []ToolCall `json:"tool_calls,omitempty"`
 }
 
 // Session is an append-only conversation stored by a Store.
@@ -226,8 +237,16 @@ func readMessages(reader io.Reader, id string) ([]Message, error) {
 }
 
 func validateMessage(message Message) error {
-	if message.Role != RoleUser && message.Role != RoleAssistant {
-		return fmt.Errorf("session message role must be %q or %q, got %q", RoleUser, RoleAssistant, message.Role)
+	if message.Role != RoleUser && message.Role != RoleAssistant && message.Role != RoleTool {
+		return fmt.Errorf("session message role must be %q, %q, or %q, got %q", RoleUser, RoleAssistant, RoleTool, message.Role)
+	}
+	if message.Role == RoleTool && strings.TrimSpace(message.ToolCallID) == "" {
+		return errors.New("tool session message requires a tool call ID")
+	}
+	for _, call := range message.ToolCalls {
+		if strings.TrimSpace(call.Name) == "" {
+			return errors.New("session tool call name is required")
+		}
 	}
 	return nil
 }

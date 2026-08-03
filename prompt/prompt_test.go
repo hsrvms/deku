@@ -13,8 +13,8 @@ func TestBuildSystemPromptContainsBaseInstructions(t *testing.T) {
 	for _, want := range []string{
 		"Deku",
 		"coding agent",
-		"single-Step Turn",
-		"No tools are available",
+		"multiple Steps",
+		"read-only tools",
 	} {
 		if !strings.Contains(got, want) {
 			t.Errorf("system prompt %q does not contain %q", got, want)

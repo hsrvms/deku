@@ -109,6 +109,45 @@ func TestOpenAICompatibleChatStreamsText(t *testing.T) {
 	}
 }
 
+func TestOpenAICompatibleChatEncodesToolContinuation(t *testing.T) {
+	var request chatRequest
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+			t.Errorf("decode request: %v", err)
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		writeSSE(t, w, `{"choices":[{"index":0,"delta":{"content":"done"},"finish_reason":null}]}`)
+		writeSSE(t, w, "[DONE]")
+	}))
+	defer server.Close()
+
+	messages := []Message{
+		{Role: RoleUser, Content: "Inspect the file."},
+		{Role: RoleAssistant, ToolCalls: []ToolCall{{ID: "call-1", Name: "read", Arguments: `{"path":"main.go"}`}}},
+		{Role: RoleTool, ToolCallID: "call-1", Name: "read", Content: "package main"},
+	}
+	events, err := NewOpenAICompatible(server.URL, "test-key").Chat(
+		context.Background(), "test-model", "Use tools.", messages, nil,
+	)
+	if err != nil {
+		t.Fatalf("Chat() error = %v", err)
+	}
+	if got := collectEvents(t, events); len(got) != 2 {
+		t.Fatalf("stream events = %#v, want response and completion", got)
+	}
+	if len(request.Messages) != 4 {
+		t.Fatalf("request messages = %d, want system and three conversation messages", len(request.Messages))
+	}
+	assistant := request.Messages[2]
+	if assistant.Role != RoleAssistant || len(assistant.ToolCalls) != 1 || assistant.ToolCalls[0].ID != "call-1" || assistant.ToolCalls[0].Function.Name != "read" {
+		t.Errorf("assistant tool call = %#v", assistant)
+	}
+	toolResult := request.Messages[3]
+	if toolResult.Role != RoleTool || toolResult.ToolCallID != "call-1" || toolResult.Name != "read" || toolResult.Content != "package main" {
+		t.Errorf("tool result = %#v", toolResult)
+	}
+}
+
 func TestOpenAICompatibleChatNormalizesToolCalls(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/event-stream")
