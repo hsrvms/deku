@@ -1,6 +1,8 @@
 # Release and CD Publishing
 
-**Status:** Implemented; awaiting first protected-tag run
+**Status:** Implemented; `v0.0.2` published successfully from a protected tag
+
+**Implementation record:** The first protected-tag run published `v0.0.2` from source revision `4ed5583753a3639aa11b3edb6c541b85c123eb17` on 2026-08-03. The run completed tagged-source verification, all five platform builds, packaging, checksum validation, provenance attestation, protected-environment approval, and GitHub Release publication. Post-release checks confirmed all five archive checksums, archive-root executable layout, the release binary's `--version` output, and GitHub artifact attestations for every archive.
 
 **Scope:** Versioned distribution of the Deku CLI from protected source tags.
 
@@ -117,15 +119,15 @@ The GitHub Release uses generated notes based on changes since the previous stab
 
 ## Acceptance Criteria
 
-- [ ] A valid protected `vX.Y.Z` tag is the only publication trigger.
-- [ ] Tags that do not match the stable version form or are not reachable from `main` cannot publish.
-- [ ] The tagged source passes `make ci` and `govulncheck ./...` before artifact publication.
+- [x] A valid protected `vX.Y.Z` tag is the only publication trigger.
+- [x] Tags that do not match the stable version form or are not reachable from `main` cannot publish.
+- [x] The tagged source passes `make ci` and `govulncheck ./...` before artifact publication.
 - [x] `deku --version` reports the tag version in release builds and does not require Provider configuration.
 - [x] Five archives are produced with the specified names, formats, executable names, and platform targets.
 - [x] `SHA256SUMS` contains the correct digest for every archive.
 - [x] Repeating packaging with the same inputs produces the same archive bytes and checksums.
-- [ ] Provenance attestations are generated for the Release Artifacts using OIDC and least-privilege permissions.
-- [ ] Publication is gated by the protected release environment and generated release notes.
+- [x] Provenance attestations are generated for the Release Artifacts using OIDC and least-privilege permissions.
+- [x] Publication is gated by the protected release environment and generated release notes.
 - [x] The workflow does not use Provider credentials or live model calls.
 - [x] A rerun cannot replace bytes in an already published Release.
 - [x] Withdrawal and revocation procedures are documented for maintainers.

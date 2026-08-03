@@ -37,6 +37,42 @@ The Release workflow then:
 
 Provider credentials are not needed by the workflow and must not be added as repository or environment secrets for release publication.
 
+## Verify a published Release
+
+After publication, verify the downloaded bytes rather than trusting the workflow result alone:
+
+1. Download the Release assets:
+
+   ```sh
+   VERSION=0.0.2
+   tmpdir=$(mktemp -d)
+   gh release download "v${VERSION}" --repo hsrvms/deku --dir "$tmpdir"
+   ```
+
+2. Verify the checksums and inspect one archive:
+
+   ```sh
+   (cd "$tmpdir" && sha256sum -c SHA256SUMS)
+   tar -xzf "$tmpdir/deku_${VERSION}_linux_amd64.tar.gz" -C "$tmpdir"
+   "$tmpdir/deku" --version
+   ```
+
+   The checksum command should report `OK` for each archive, and the version command should print the Release Version without requiring Provider configuration. Use `shasum -a 256 -c` on systems without `sha256sum`.
+
+3. Verify provenance for each downloaded archive with a current GitHub CLI:
+
+   ```sh
+   gh attestation verify "$tmpdir/deku_${VERSION}_linux_amd64.tar.gz" --repo hsrvms/deku
+   ```
+
+   Repeat the attestation check for the other platform archives. A successful check verifies the archive's signed provenance and its association with the repository; it does not replace checksum verification.
+
+Remove the temporary directory after verification:
+
+```sh
+rm -rf "$tmpdir"
+```
+
 ## Recovery and reruns
 
 A failed workflow may be rerun for the same tag. Existing GitHub Release assets are downloaded and compared byte-for-byte; an asset with different bytes causes the workflow to stop rather than overwrite it.
