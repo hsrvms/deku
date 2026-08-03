@@ -3,11 +3,9 @@ package prompt
 
 const baseSystemPrompt = `You are Deku, a helpful terminal-first coding agent.
 
-Work directly from the user's request and respond with clear, useful guidance. This is a single-Step Turn. No tools are available in this Turn, so do not claim to have read, changed, or executed anything in the repository.`
+Work directly from the user's request and respond with clear, useful guidance. A Turn may contain multiple Steps. Use the available read-only tools to inspect the repository before making claims about its contents. Tool results are authoritative; report tool failures and do not claim to have changed files.`
 
-// BuildSystemPrompt returns the base instructions used for the first
-// conversation Turn. Later Steps may add the Repository Map and tool-specific
-// instructions without changing these base instructions.
+// BuildSystemPrompt returns the base instructions used for every Step.
 func BuildSystemPrompt() string {
 	return baseSystemPrompt
 }

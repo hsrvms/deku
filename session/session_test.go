@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"reflect"
 	"testing"
 )
 
@@ -48,7 +49,7 @@ func TestStoreCreatesAppendsAndResumesSession(t *testing.T) {
 		if err := json.Unmarshal(line, &got); err != nil {
 			t.Fatalf("JSONL record %d is invalid: %v", index, err)
 		}
-		if got != messages[index] {
+		if !reflect.DeepEqual(got, messages[index]) {
 			t.Errorf("JSONL record %d = %#v, want %#v", index, got, messages[index])
 		}
 	}
@@ -67,9 +68,36 @@ func TestStoreCreatesAppendsAndResumesSession(t *testing.T) {
 		t.Fatalf("resumed message count = %d, want %d", len(resumed.Messages), len(messages))
 	}
 	for index, message := range resumed.Messages {
-		if message != messages[index] {
+		if !reflect.DeepEqual(message, messages[index]) {
 			t.Errorf("resumed message %d = %#v, want %#v", index, message, messages[index])
 		}
+	}
+}
+
+func TestSessionPersistsToolCallsAndResults(t *testing.T) {
+	store, err := NewStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewStore() error = %v", err)
+	}
+	created, err := store.Create()
+	if err != nil {
+		t.Fatalf("Create() error = %v", err)
+	}
+	messages := []Message{
+		{Role: RoleAssistant, ToolCalls: []ToolCall{{ID: "call-1", Name: "read", Arguments: `{"path":"main.go"}`}}, Content: ""},
+		{Role: RoleTool, ToolCallID: "call-1", Name: "read", Content: "package main\n"},
+	}
+	for _, message := range messages {
+		if err := created.Append(message); err != nil {
+			t.Fatalf("Append() error = %v", err)
+		}
+	}
+	resumed, err := store.Resume(created.ID)
+	if err != nil {
+		t.Fatalf("Resume() error = %v", err)
+	}
+	if !reflect.DeepEqual(resumed.Messages, messages) {
+		t.Fatalf("resumed messages = %#v, want %#v", resumed.Messages, messages)
 	}
 }
 
