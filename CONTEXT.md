@@ -125,7 +125,11 @@ The map is not a constraint — the model can always explore files not shown in 
 
 ## Edit
 
-A self-validating request to change a file by replacing exact existing text with specified new text. An Edit is accepted only when every requested match is present and unambiguous; otherwise, no change is made.
+A self-validating request to modify an **existing** file by replacing exact existing text with specified new text. An Edit cannot create a new file or populate an empty file, because an empty string is never a valid exact match. An Edit is accepted only when every requested match is present and unambiguous; otherwise, no change is made.
+
+## Write
+
+A Tool that creates a new file, fills an empty file, or replaces a whole file's content at a repository-relative path. Parent directories are created as needed. A Write against an existing non-empty file is refused unless the caller requests an overwrite. The Write Tool is distinct from the **Write** Approval tier: it is a capability, and because it mutates the repository it is classified as Write tier and therefore gated by synchronous Approval.
 
 ---
 

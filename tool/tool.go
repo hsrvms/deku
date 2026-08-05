@@ -63,6 +63,7 @@ func NewRegistry(root string) (*Registry, error) {
 		&grepTool{filesystem: filesystem},
 		&lsTool{filesystem: filesystem},
 		&readTool{filesystem: filesystem},
+		&writeTool{filesystem: filesystem},
 	}
 	registry := &Registry{
 		root:  absoluteRoot,
@@ -148,14 +149,78 @@ func (f *filesystem) resolve(ctx context.Context, path string, allowRoot bool) (
 	if err != nil {
 		return "", fmt.Errorf("resolve path %q: %w", path, err)
 	}
-	inside, err := filepath.Rel(f.root, resolved)
-	if err != nil {
+	if err := f.confineToRoot(resolved); err != nil {
 		return "", fmt.Errorf("check path %q: %w", path, err)
 	}
+	return resolved, nil
+}
+
+// confineToRoot reports an error when resolved escapes the repository root.
+func (f *filesystem) confineToRoot(resolved string) error {
+	inside, err := filepath.Rel(f.root, resolved)
+	if err != nil {
+		return fmt.Errorf("compare with repository root: %w", err)
+	}
 	if inside == ".." || strings.HasPrefix(inside, ".."+string(filepath.Separator)) || filepath.IsAbs(inside) {
+		return errors.New("path must remain within the repository root")
+	}
+	return nil
+}
+
+// resolveCreatePath confines a not-yet-existing target to the repository root.
+// Unlike resolve, the target itself may be absent; the deepest existing
+// ancestor is resolved and must stay inside the root, so writing through a
+// symlink that escapes the root is rejected while a missing leaf is allowed.
+func (f *filesystem) resolveCreatePath(ctx context.Context, path string) (string, error) {
+	if err := contextError(ctx); err != nil {
+		return "", err
+	}
+	path = strings.TrimSpace(path)
+	if path == "" {
+		return "", errors.New("path is required")
+	}
+	if filepath.IsAbs(path) {
+		return "", errors.New("path must be relative to the repository root")
+	}
+	cleaned := filepath.Clean(path)
+	if cleaned == ".." || strings.HasPrefix(cleaned, ".."+string(filepath.Separator)) {
 		return "", errors.New("path must remain within the repository root")
 	}
-	return resolved, nil
+	candidate := filepath.Join(f.root, cleaned)
+	resolved, err := resolveExistingAncestor(candidate)
+	if err != nil {
+		return "", fmt.Errorf("resolve path %q: %w", path, err)
+	}
+	if err := f.confineToRoot(resolved); err != nil {
+		return "", fmt.Errorf("check path %q: %w", path, err)
+	}
+	return candidate, nil
+}
+
+// resolveExistingAncestor returns the symlink-resolved path of the deepest
+// existing ancestor of path. It walks up until it finds a path that exists, so
+// a not-yet-created target's parent directory can still be rooted and checked
+// for confinement.
+func resolveExistingAncestor(path string) (string, error) {
+	current := path
+	for {
+		_, err := os.Stat(current)
+		if err == nil {
+			resolved, evalErr := filepath.EvalSymlinks(current)
+			if evalErr != nil {
+				return "", evalErr
+			}
+			return resolved, nil
+		}
+		if !errors.Is(err, os.ErrNotExist) {
+			return "", err
+		}
+		parent := filepath.Dir(current)
+		if parent == current {
+			return "", errors.New("no existing ancestor to resolve")
+		}
+		current = parent
+	}
 }
 
 type lsTool struct{ filesystem *filesystem }
@@ -174,6 +239,75 @@ type editArguments struct {
 }
 
 func (t *editTool) Tier() approval.Tier { return approval.Write }
+
+type writeTool struct {
+	filesystem *filesystem
+}
+
+type writeArguments struct {
+	Path      string `json:"path"`
+	Content   string `json:"content"`
+	Overwrite bool   `json:"overwrite"`
+}
+
+func (t *writeTool) Tier() approval.Tier { return approval.Write }
+
+func (t *writeTool) Definition() provider.ToolDefinition {
+	return provider.ToolDefinition{
+		Type: "function",
+		Function: provider.FunctionDefinition{
+			Name:        "write",
+			Description: "Create a repository file, populate an empty file, or replace a whole file's content. Parent directories are created as needed; an existing non-empty file is left unchanged unless overwrite is set.",
+			Parameters: objectSchema(map[string]any{
+				"path": map[string]any{
+					"type":        "string",
+					"description": "Repository-relative file path to write.",
+				},
+				"content": map[string]any{
+					"type":        "string",
+					"description": "Full file content to write.",
+				},
+				"overwrite": map[string]any{
+					"type":        "boolean",
+					"description": "Replace an existing non-empty file's content when true.",
+				},
+			}, "path", "content"),
+		},
+	}
+}
+
+func (t *writeTool) Execute(ctx context.Context, raw json.RawMessage) (string, error) {
+	var arguments writeArguments
+	if err := decodeArguments(raw, &arguments); err != nil {
+		return "", fmt.Errorf("write arguments: %w", err)
+	}
+	path, err := t.filesystem.resolveCreatePath(ctx, arguments.Path)
+	if err != nil {
+		return "", fmt.Errorf("write path: %w", err)
+	}
+	info, statErr := os.Stat(path)
+	perm := os.FileMode(0o644)
+	switch {
+	case statErr == nil:
+		if info.IsDir() {
+			return "", fmt.Errorf("write %q: path is a directory", arguments.Path)
+		}
+		perm = info.Mode().Perm()
+		if info.Size() > 0 && !arguments.Overwrite {
+			return "", fmt.Errorf("write %q: file already exists with content; set overwrite to replace it or use edit for surgical changes", arguments.Path)
+		}
+	case errors.Is(statErr, os.ErrNotExist):
+		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+			return "", fmt.Errorf("write %q: create parent directories: %w", arguments.Path, err)
+		}
+	default:
+		return "", fmt.Errorf("write %q: %w", arguments.Path, statErr)
+	}
+	if err := writeFileAtomic(path, []byte(arguments.Content), perm); err != nil {
+		return "", fmt.Errorf("write %q: %w", arguments.Path, err)
+	}
+	return fmt.Sprintf("Wrote %s.", arguments.Path), nil
+}
 
 func (t *lsTool) Tier() approval.Tier { return approval.Read }
 
