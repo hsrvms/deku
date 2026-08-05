@@ -17,8 +17,8 @@ func TestRegistryProvidesReadOnlyToolDefinitions(t *testing.T) {
 	}
 
 	definitions := registry.Definitions()
-	if got := definitionNames(definitions); !reflect.DeepEqual(got, []string{"grep", "ls", "read"}) {
-		t.Fatalf("tool names = %#v, want grep, ls, read", got)
+	if got := definitionNames(definitions); !reflect.DeepEqual(got, []string{"edit", "grep", "ls", "read"}) {
+		t.Fatalf("tool names = %#v, want edit, grep, ls, read", got)
 	}
 	for _, definition := range definitions {
 		if definition.Type != "function" {
@@ -100,6 +100,88 @@ func TestRegistryRejectsInvalidArgumentsAndPathTraversal(t *testing.T) {
 		}
 		if _, err := registry.Execute(context.Background(), toolName, testCase.args); err == nil {
 			t.Errorf("%s: Execute() error = nil, want error", testCase.name)
+		}
+	}
+}
+
+func TestEditToolAppliesExactReplacementsAtomically(t *testing.T) {
+	root := t.TempDir()
+	target := filepath.Join(root, "main.go")
+	if err := os.WriteFile(target, []byte("package main\n\nfunc main() {}\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	registry, err := NewRegistry(root)
+	if err != nil {
+		t.Fatalf("NewRegistry() error = %v", err)
+	}
+
+	result, err := registry.Execute(context.Background(), "edit", `{
+		"path": "main.go",
+		"edits": [
+			{"oldText": "package main", "newText": "package app"},
+			{"oldText": "func main() {}", "newText": "func run() {}"}
+		]
+	}`)
+	if err != nil {
+		t.Fatalf("edit error = %v", err)
+	}
+	if result != "Applied 2 replacement(s) to main.go." {
+		t.Errorf("edit result = %q", result)
+	}
+	got, err := os.ReadFile(target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != "package app\n\nfunc run() {}\n" {
+		t.Errorf("edited file = %q, want replaced content", got)
+	}
+}
+
+func TestEditToolFailsAtomicallyOnMismatch(t *testing.T) {
+	root := t.TempDir()
+	target := filepath.Join(root, "main.go")
+	original := "package main\n\nfunc main() {}\n"
+	if err := os.WriteFile(target, []byte(original), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	registry, err := NewRegistry(root)
+	if err != nil {
+		t.Fatalf("NewRegistry() error = %v", err)
+	}
+
+	_, err = registry.Execute(context.Background(), "edit", `{
+		"path": "main.go",
+		"edits": [
+			{"oldText": "package main", "newText": "package app"},
+			{"oldText": "func absent()", "newText": "func added()"}
+		]
+	}`)
+	if err == nil {
+		t.Fatal("edit error = nil, want mismatch error")
+	}
+	got, readErr := os.ReadFile(target)
+	if readErr != nil {
+		t.Fatal(readErr)
+	}
+	if string(got) != original {
+		t.Errorf("file mutated after failure = %q, want %q", got, original)
+	}
+}
+
+func TestEditToolRejectsEmptyEditsAndPathTraversal(t *testing.T) {
+	root := t.TempDir()
+	registry, err := NewRegistry(root)
+	if err != nil {
+		t.Fatalf("NewRegistry() error = %v", err)
+	}
+	cases := []string{
+		`{"path":"main.go","edits":[]}`,
+		`{"path":"main.go"}`,
+		`{"path":"../outside","edits":[{"oldText":"a","newText":"b"}]}`,
+	}
+	for _, args := range cases {
+		if _, err := registry.Execute(context.Background(), "edit", args); err == nil {
+			t.Errorf("edit %s: Execute() error = nil, want error", args)
 		}
 	}
 }
