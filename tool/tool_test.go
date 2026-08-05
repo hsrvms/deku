@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"strings"
 	"testing"
 
 	"github.com/hsrvms/deku/approval"
@@ -18,8 +19,8 @@ func TestRegistryProvidesReadOnlyToolDefinitions(t *testing.T) {
 	}
 
 	definitions := registry.Definitions()
-	if got := definitionNames(definitions); !reflect.DeepEqual(got, []string{"edit", "grep", "ls", "read", "write"}) {
-		t.Fatalf("tool names = %#v, want edit, grep, ls, read, write", got)
+	if got := definitionNames(definitions); !reflect.DeepEqual(got, []string{"command", "edit", "grep", "ls", "read", "write"}) {
+		t.Fatalf("tool names = %#v, want command, edit, grep, ls, read, write", got)
 	}
 	for _, definition := range definitions {
 		if definition.Type != "function" {
@@ -194,11 +195,12 @@ func TestRegistryDeclaresToolTiers(t *testing.T) {
 	}
 
 	cases := map[string]approval.Tier{
-		"ls":    approval.Read,
-		"read":  approval.Read,
-		"grep":  approval.Read,
-		"edit":  approval.Write,
-		"write": approval.Write,
+		"command": approval.Destructive,
+		"ls":      approval.Read,
+		"read":    approval.Read,
+		"grep":    approval.Read,
+		"edit":    approval.Write,
+		"write":   approval.Write,
 	}
 	for name, want := range cases {
 		got, tierErr := registry.Tier(name)
@@ -355,6 +357,106 @@ func TestWriteToolRejectsPathTraversalAndSymlinkEscape(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(external, "victim.txt")); !os.IsNotExist(err) {
 		t.Errorf("write escaped repository root; external file exists or stat failed: %v", err)
+	}
+}
+
+func TestCommandToolRunsAndCapturesOutput(t *testing.T) {
+	root := t.TempDir()
+	registry, err := NewRegistry(root)
+	if err != nil {
+		t.Fatalf("NewRegistry() error = %v", err)
+	}
+
+	result, err := registry.Execute(context.Background(), "command", `{"command":"printf 'hello\\n'"}`)
+	if err != nil {
+		t.Fatalf("command error = %v", err)
+	}
+	if !strings.Contains(result, "exit code: 0") {
+		t.Errorf("command result = %q, want exit code 0", result)
+	}
+	if !strings.Contains(result, "hello") {
+		t.Errorf("command result = %q, want captured stdout", result)
+	}
+}
+
+func TestCommandToolHonorsWorkingDirectory(t *testing.T) {
+	root := t.TempDir()
+	if err := os.Mkdir(filepath.Join(root, "pkg"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	registry, err := NewRegistry(root)
+	if err != nil {
+		t.Fatalf("NewRegistry() error = %v", err)
+	}
+
+	if _, err := registry.Execute(context.Background(), "command", `{"command":"echo built > built.txt","dir":"pkg"}`); err != nil {
+		t.Fatalf("command error = %v", err)
+	}
+	got, err := os.ReadFile(filepath.Join(root, "pkg", "built.txt"))
+	if err != nil {
+		t.Fatalf("command did not run in working directory: %v", err)
+	}
+	if string(got) != "built\n" {
+		t.Errorf("command output file = %q", got)
+	}
+	if _, err := os.Stat(filepath.Join(root, "built.txt")); !os.IsNotExist(err) {
+		t.Errorf("command leaked outside working directory: %v", err)
+	}
+}
+
+func TestCommandToolReportsNonZeroExitCode(t *testing.T) {
+	root := t.TempDir()
+	registry, err := NewRegistry(root)
+	if err != nil {
+		t.Fatalf("NewRegistry() error = %v", err)
+	}
+
+	result, err := registry.Execute(context.Background(), "command", `{"command":"printf 'oops\\n'; exit 3"}`)
+	if err != nil {
+		t.Fatalf("command error = %v", err)
+	}
+	if !strings.Contains(result, "exit code: 3") {
+		t.Errorf("command result = %q, want exit code 3", result)
+	}
+	if !strings.Contains(result, "oops") {
+		t.Errorf("command result = %q, want captured output on failure", result)
+	}
+}
+
+func TestCommandToolHonorsTimeout(t *testing.T) {
+	root := t.TempDir()
+	registry, err := NewRegistry(root)
+	if err != nil {
+		t.Fatalf("NewRegistry() error = %v", err)
+	}
+
+	_, err = registry.Execute(context.Background(), "command", `{"command":"sleep 5","timeout":1}`)
+	if err == nil {
+		t.Fatal("command error = nil, want timeout error")
+	}
+	if !strings.Contains(err.Error(), "timed out") && !strings.Contains(err.Error(), "deadline") {
+		t.Errorf("command error = %q, want timeout report", err.Error())
+	}
+}
+
+func TestCommandToolRejectsEmptyCommandAndPathTraversal(t *testing.T) {
+	root := t.TempDir()
+	registry, err := NewRegistry(root)
+	if err != nil {
+		t.Fatalf("NewRegistry() error = %v", err)
+	}
+
+	cases := []string{
+		`{}`,
+		`{"command":"  "}`,
+		`{"command":"echo hi","dir":"../outside"}`,
+		`{"command":"echo hi","dir":"/absolute"}`,
+		`{"command":"echo hi","timeout":-1}`,
+	}
+	for _, args := range cases {
+		if _, err := registry.Execute(context.Background(), "command", args); err == nil {
+			t.Errorf("command %s: Execute() error = nil, want error", args)
+		}
 	}
 }
 

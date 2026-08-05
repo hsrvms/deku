@@ -10,10 +10,12 @@ import (
 	"io"
 	"io/fs"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"regexp"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/hsrvms/deku/approval"
 	"github.com/hsrvms/deku/edit"
@@ -59,6 +61,7 @@ func NewRegistry(root string) (*Registry, error) {
 
 	filesystem := &filesystem{root: absoluteRoot}
 	tools := []Tool{
+		&commandTool{filesystem: filesystem},
 		&editTool{filesystem: filesystem},
 		&grepTool{filesystem: filesystem},
 		&lsTool{filesystem: filesystem},
@@ -221,6 +224,127 @@ func resolveExistingAncestor(path string) (string, error) {
 		}
 		current = parent
 	}
+}
+
+// commandDefaultTimeout is the fallback deadline for a command call when the
+// caller supplies no explicit timeout. It bounds runaway processes so a single
+// Tool Call cannot hang the Agent indefinitely.
+const commandDefaultTimeout = 120 * time.Second
+
+type commandTool struct {
+	filesystem *filesystem
+}
+
+type commandArguments struct {
+	Command string `json:"command"`
+	Dir     string `json:"dir"`
+	Timeout int    `json:"timeout"`
+}
+
+func (t *commandTool) Tier() approval.Tier { return approval.Destructive }
+
+func (t *commandTool) Definition() provider.ToolDefinition {
+	return provider.ToolDefinition{
+		Type: "function",
+		Function: provider.FunctionDefinition{
+			Name:        "command",
+			Description: "Run a shell command in the repository, capturing stdout, stderr, and the exit code. The command is destructive and always requires Approval; set dir to a repository-relative working directory and timeout to a deadline in whole seconds (default 120s).",
+			Parameters: objectSchema(map[string]any{
+				"command": map[string]any{
+					"type":        "string",
+					"description": "Shell command to run.",
+				},
+				"dir": map[string]any{
+					"type":        "string",
+					"description": "Optional repository-relative working directory; defaults to the repository root.",
+				},
+				"timeout": map[string]any{
+					"type":        "integer",
+					"minimum":     1,
+					"description": "Optional deadline in whole seconds; the command is killed when it exceeds this.",
+				},
+			}, "command"),
+		},
+	}
+}
+
+func (t *commandTool) Execute(ctx context.Context, raw json.RawMessage) (string, error) {
+	var arguments commandArguments
+	if err := decodeArguments(raw, &arguments); err != nil {
+		return "", fmt.Errorf("command arguments: %w", err)
+	}
+	if strings.TrimSpace(arguments.Command) == "" {
+		return "", errors.New("command is required")
+	}
+	if arguments.Timeout < 0 {
+		return "", errors.New("command timeout must be positive")
+	}
+	dir, err := t.filesystem.resolve(ctx, arguments.Dir, true)
+	if err != nil {
+		return "", fmt.Errorf("command directory: %w", err)
+	}
+	info, err := os.Stat(dir)
+	if err != nil {
+		return "", fmt.Errorf("command directory %q: %w", arguments.Dir, err)
+	}
+	if !info.IsDir() {
+		return "", fmt.Errorf("command directory %q is not a directory", arguments.Dir)
+	}
+	timeout := commandDefaultTimeout
+	if arguments.Timeout > 0 {
+		timeout = time.Duration(arguments.Timeout) * time.Second
+	}
+	return runCommand(ctx, dir, arguments.Command, timeout)
+}
+
+// runCommand executes command through the shell in dir, capturing stdout and
+// stderr and reporting the exit code. A deadline or a canceled caller context
+// kills the process; a timeout is reported as an error rather than a fake exit
+// code so the Agent knows the command never completed.
+func runCommand(ctx context.Context, dir, command string, timeout time.Duration) (string, error) {
+	cmdCtx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+
+	cmd := exec.CommandContext(cmdCtx, "sh", "-c", command)
+	cmd.Dir = dir
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+
+	err := cmd.Run()
+	var exitCode int
+	if err != nil {
+		if ctx.Err() != nil {
+			return "", fmt.Errorf("execute command: %w", ctx.Err())
+		}
+		if cmdCtx.Err() != nil {
+			return "", fmt.Errorf("command timed out after %s: %w", timeout, cmdCtx.Err())
+		}
+		var exitErr *exec.ExitError
+		if !errors.As(err, &exitErr) {
+			return "", fmt.Errorf("execute command: %w", err)
+		}
+		exitCode = exitErr.ExitCode()
+	}
+	return formatCommandResult(exitCode, stdout.String(), stderr.String()), nil
+}
+
+// formatCommandResult renders the captured output blocks and the exit code in
+// a stable, model-readable layout.
+func formatCommandResult(exitCode int, stdout, stderr string) string {
+	var builder strings.Builder
+	fmt.Fprintf(&builder, "exit code: %d\n", exitCode)
+	builder.WriteString("stdout:\n")
+	builder.WriteString(stdout)
+	if !strings.HasSuffix(stdout, "\n") {
+		builder.WriteByte('\n')
+	}
+	builder.WriteString("stderr:\n")
+	builder.WriteString(stderr)
+	if !strings.HasSuffix(stderr, "\n") {
+		builder.WriteByte('\n')
+	}
+	return builder.String()
 }
 
 type lsTool struct{ filesystem *filesystem }
