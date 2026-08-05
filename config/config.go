@@ -13,6 +13,7 @@ import (
 // Config holds all configuration for Deku.
 type Config struct {
 	Provider ProviderConfig
+	Approval ApprovalConfig
 }
 
 // ProviderConfig holds the OpenAI-compatible provider configuration.
@@ -22,6 +23,14 @@ type ProviderConfig struct {
 	Model    string
 }
 
+// ApprovalConfig holds Approval classification overrides. Tools maps a tool
+// name to a tier override (read, write, or destructive). Defaults maps a tier
+// to its enforcement action (auto or prompt).
+type ApprovalConfig struct {
+	Tools    map[string]string
+	Defaults map[string]string
+}
+
 // fileConfig mirrors the structure of ~/.deku/config.yaml.
 type fileConfig struct {
 	Provider struct {
@@ -29,6 +38,10 @@ type fileConfig struct {
 		APIKey   string `yaml:"api_key"`
 		Model    string `yaml:"model"`
 	} `yaml:"provider"`
+	Approval struct {
+		Tools    map[string]string `yaml:"tools"`
+		Defaults map[string]string `yaml:"defaults"`
+	} `yaml:"approval"`
 }
 
 // Load reads configuration from ~/.deku/config.yaml and environment variables.
@@ -42,6 +55,8 @@ func Load() (*Config, error) {
 		cfg.Provider.Endpoint = fc.Provider.Endpoint
 		cfg.Provider.APIKey = fc.Provider.APIKey
 		cfg.Provider.Model = fc.Provider.Model
+		cfg.Approval.Tools = fc.Approval.Tools
+		cfg.Approval.Defaults = fc.Approval.Defaults
 	}
 
 	// Override with environment variables.

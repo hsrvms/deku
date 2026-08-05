@@ -15,14 +15,17 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/hsrvms/deku/approval"
 	"github.com/hsrvms/deku/edit"
 	"github.com/hsrvms/deku/provider"
 )
 
-// Tool is a model-invokable built-in capability.
+// Tool is a model-invokable built-in capability. Tier declares the tool's
+// classification so the Approval gate can decide whether it runs unprompted.
 type Tool interface {
 	Definition() provider.ToolDefinition
 	Execute(context.Context, json.RawMessage) (string, error)
+	Tier() approval.Tier
 }
 
 // Registry owns the tools available to one Agent and confines them to a
@@ -87,6 +90,19 @@ func (r *Registry) Definitions() []provider.ToolDefinition {
 		definitions = append(definitions, r.tools[name].Definition())
 	}
 	return definitions
+}
+
+// Tier returns the classification the named tool declares. The Agent uses it
+// to decide whether Approval is required before execution.
+func (r *Registry) Tier(name string) (approval.Tier, error) {
+	if r == nil {
+		return "", errors.New("tool registry is nil")
+	}
+	tool, ok := r.tools[name]
+	if !ok {
+		return "", fmt.Errorf("unknown tool %q", name)
+	}
+	return tool.Tier(), nil
 }
 
 // Execute validates and runs a named tool. Tool failures are returned to the
@@ -156,6 +172,14 @@ type editArguments struct {
 	Path  string        `json:"path"`
 	Edits []edit.Change `json:"edits"`
 }
+
+func (t *editTool) Tier() approval.Tier { return approval.Write }
+
+func (t *lsTool) Tier() approval.Tier { return approval.Read }
+
+func (t *readTool) Tier() approval.Tier { return approval.Read }
+
+func (t *grepTool) Tier() approval.Tier { return approval.Read }
 
 func (t *editTool) Definition() provider.ToolDefinition {
 	return provider.ToolDefinition{
