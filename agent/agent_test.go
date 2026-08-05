@@ -10,6 +10,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/hsrvms/deku/approval"
 	"github.com/hsrvms/deku/provider"
 	"github.com/hsrvms/deku/session"
 	"github.com/hsrvms/deku/tool"
@@ -515,6 +516,103 @@ func TestAgentRejectsCommandToolCallOnDenial(t *testing.T) {
 	}
 }
 
+func TestAgentInjectsFreshRepositoryMapIntoEveryStep(t *testing.T) {
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "main.go"), []byte("package main\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	registry, err := tool.NewRegistry(root)
+	if err != nil {
+		t.Fatalf("NewRegistry() error = %v", err)
+	}
+	store, err := session.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewStore() error = %v", err)
+	}
+	conversation, err := store.Create()
+	if err != nil {
+		t.Fatalf("Create() error = %v", err)
+	}
+	providerStub := &continuationProvider{
+		responses: [][]provider.Event{
+			{provider.ToolCall{ID: "call-1", Name: "write", Arguments: `{"path":"notes.txt","content":"hello\n"}`}, provider.Done{}},
+			{provider.TextDelta{Text: "Created notes.txt."}, provider.Done{}},
+		},
+	}
+	var output bytes.Buffer
+	runner := NewWithTools(providerStub, "test-model", conversation, &output, strings.NewReader("y\n"), registry)
+
+	result, err := runner.Turn(context.Background(), "Add a notes file.")
+	if err != nil {
+		t.Fatalf("Turn() error = %v", err)
+	}
+	if result.Response != "Created notes.txt." {
+		t.Errorf("response = %q, want final response", result.Response)
+	}
+	if len(providerStub.requests) != 2 {
+		t.Fatalf("provider steps = %d, want 2", len(providerStub.requests))
+	}
+	first := providerStub.requests[0].system
+	second := providerStub.requests[1].system
+	for i, system := range []string{first, second} {
+		if !strings.Contains(system, "The map shows file paths, not source code.") {
+			t.Errorf("step %d system prompt lacks the not-source-code instruction: %q", i+1, system)
+		}
+		if !strings.Contains(system, "Use `read` to obtain file contents before editing.") {
+			t.Errorf("step %d system prompt lacks the use-read instruction: %q", i+1, system)
+		}
+		if !strings.Contains(system, "main.go") {
+			t.Errorf("step %d system prompt does not include main.go in the map: %q", i+1, system)
+		}
+	}
+	if strings.Contains(first, "notes.txt") {
+		t.Errorf("first-step map %q already shows notes.txt before it exists", first)
+	}
+	if !strings.Contains(second, "notes.txt") {
+		t.Errorf("second-step map %q did not refresh to include the newly written notes.txt", second)
+	}
+}
+
+func TestAgentRepositoryMapHonorsExclusionPolicy(t *testing.T) {
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "main.go"), []byte("package main\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "scratch.tmp"), []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	registry, err := tool.NewRegistry(root)
+	if err != nil {
+		t.Fatalf("NewRegistry() error = %v", err)
+	}
+	store, err := session.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewStore() error = %v", err)
+	}
+	conversation, err := store.Create()
+	if err != nil {
+		t.Fatalf("Create() error = %v", err)
+	}
+	providerStub := &continuationProvider{
+		responses: [][]provider.Event{
+			{provider.TextDelta{Text: "Inspecting the repository."}, provider.Done{}},
+		},
+	}
+	var output bytes.Buffer
+	runner := NewWithPolicy(providerStub, "test-model", conversation, &output, nil, registry, approval.DefaultPolicy(), []string{"*.tmp"})
+
+	if _, err := runner.Turn(context.Background(), "Inspect the repository."); err != nil {
+		t.Fatalf("Turn() error = %v", err)
+	}
+	system := providerStub.requests[0].system
+	if !strings.Contains(system, "main.go") {
+		t.Errorf("system prompt %q does not include main.go", system)
+	}
+	if strings.Contains(system, "scratch.tmp") {
+		t.Errorf("system prompt %q includes scratch.tmp excluded by policy", system)
+	}
+}
+
 type continuationProvider struct {
 	responses [][]provider.Event
 	requests  []providerRequest
@@ -522,15 +620,17 @@ type continuationProvider struct {
 }
 
 type providerRequest struct {
+	system   string
 	messages []provider.Message
 	tools    []provider.ToolDefinition
 }
 
-func (p *continuationProvider) Chat(_ context.Context, _ string, _ string, messages []provider.Message, tools []provider.ToolDefinition) (<-chan provider.Event, error) {
+func (p *continuationProvider) Chat(_ context.Context, _ string, system string, messages []provider.Message, tools []provider.ToolDefinition) (<-chan provider.Event, error) {
 	if p.calls >= len(p.responses) {
 		return nil, errors.New("unexpected provider call")
 	}
 	p.requests = append(p.requests, providerRequest{
+		system:   system,
 		messages: append([]provider.Message(nil), messages...),
 		tools:    append([]provider.ToolDefinition(nil), tools...),
 	})

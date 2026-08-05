@@ -3,6 +3,7 @@ package config
 import (
 	"os"
 	"path/filepath"
+	"reflect"
 	"testing"
 )
 
@@ -180,6 +181,40 @@ approval:
 	}
 	if got := cfg.Approval.Defaults["write"]; got != "auto" {
 		t.Errorf("approval.defaults.write = %q, want auto", got)
+	}
+}
+
+func TestLoadRepoMapExcludeFromConfigFile(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("DEKU_PROVIDER_ENDPOINT", "https://api.example.com/v1")
+	t.Setenv("DEKU_PROVIDER_API_KEY", "sk-test-key")
+	t.Setenv("DEKU_PROVIDER_MODEL", "test-model")
+
+	dekuDir := filepath.Join(home, ".deku")
+	if err := os.MkdirAll(dekuDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	yaml := `
+provider:
+  endpoint: "https://api.file.com/v1"
+  api_key: "sk-file-key"
+  model: "file-model"
+repo_map:
+  exclude:
+    - "vendor"
+    - "*.gen.go"
+`
+	if err := os.WriteFile(filepath.Join(dekuDir, "config.yaml"), []byte(yaml), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	if got := cfg.RepoMap.Exclude; !reflect.DeepEqual(got, []string{"vendor", "*.gen.go"}) {
+		t.Errorf("repo_map.exclude = %#v, want [vendor *.gen.go]", got)
 	}
 }
 

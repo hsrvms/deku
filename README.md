@@ -101,6 +101,21 @@ approval:
     write: auto         # run all Write tools without asking
 ```
 
+Deku injects a compact file-tree **Repository Map** into the system prompt on
+every Step so the model can orient itself without spending tool calls on
+mechanical file discovery. The map shows file paths, not source code; the model
+must use `read` to obtain actual file contents before editing. The map is
+generated fresh on each Step and its size is bounded to stay within a token
+budget. It respects `.gitignore` and an additional exclusion policy declared in
+`~/.deku/config.yaml`:
+
+```yaml
+repo_map:
+  exclude:
+    - "vendor"        # hide a whole directory
+    - "*.gen.go"      # hide generated files
+```
+
 ## Development
 
 Run the repository's complete local validation suite with:
