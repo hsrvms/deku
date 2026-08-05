@@ -7,6 +7,7 @@ import (
 	"reflect"
 	"testing"
 
+	"github.com/hsrvms/deku/approval"
 	"github.com/hsrvms/deku/provider"
 )
 
@@ -183,6 +184,32 @@ func TestEditToolRejectsEmptyEditsAndPathTraversal(t *testing.T) {
 		if _, err := registry.Execute(context.Background(), "edit", args); err == nil {
 			t.Errorf("edit %s: Execute() error = nil, want error", args)
 		}
+	}
+}
+
+func TestRegistryDeclaresToolTiers(t *testing.T) {
+	registry, err := NewRegistry(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewRegistry() error = %v", err)
+	}
+
+	cases := map[string]approval.Tier{
+		"ls":   approval.Read,
+		"read": approval.Read,
+		"grep": approval.Read,
+		"edit": approval.Write,
+	}
+	for name, want := range cases {
+		got, tierErr := registry.Tier(name)
+		if tierErr != nil {
+			t.Fatalf("Tier(%q) error = %v", name, tierErr)
+		}
+		if got != want {
+			t.Errorf("Tier(%q) = %q, want %q", name, got, want)
+		}
+	}
+	if _, tierErr := registry.Tier("unknown"); tierErr == nil {
+		t.Errorf("Tier(unknown) error = nil, want error")
 	}
 }
 

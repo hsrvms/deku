@@ -10,6 +10,7 @@ import (
 	"strings"
 	"sync"
 
+	"github.com/hsrvms/deku/approval"
 	"github.com/hsrvms/deku/prompt"
 	"github.com/hsrvms/deku/provider"
 	"github.com/hsrvms/deku/session"
@@ -35,6 +36,7 @@ type Agent struct {
 	session  *session.Session
 	output   io.Writer
 	tools    *tool.Registry
+	approval approval.Decider
 	toolErr  error
 
 	turnMu sync.Mutex
@@ -43,22 +45,35 @@ type Agent struct {
 var _ Runner = (*Agent)(nil)
 
 // New constructs an Agent rooted at the current working directory. The
-// output writer receives TextDelta content as it arrives; a nil writer
-// discards streamed output while still returning it in TurnResult.
-func New(p provider.Chat, model string, conversation *session.Session, output io.Writer) *Agent {
+// output writer receives TextDelta content and Approval prompts; a nil writer
+// discards streamed output while still returning it in TurnResult. The input
+// reader supplies synchronous Approval decisions; a nil reader defaults to
+// standard input.
+func New(p provider.Chat, model string, conversation *session.Session, output io.Writer, input io.Reader) *Agent {
 	registry, err := tool.NewRegistry(".")
-	return newAgent(p, model, conversation, output, registry, err)
+	return newAgent(p, model, conversation, output, input, registry, nil, err)
 }
 
 // NewWithTools constructs an Agent with an explicit Tool registry. This is the
 // test and embedding seam for choosing the repository being explored.
-func NewWithTools(p provider.Chat, model string, conversation *session.Session, output io.Writer, registry *tool.Registry) *Agent {
-	return newAgent(p, model, conversation, output, registry, nil)
+func NewWithTools(p provider.Chat, model string, conversation *session.Session, output io.Writer, input io.Reader, registry *tool.Registry) *Agent {
+	return newAgent(p, model, conversation, output, input, registry, nil, nil)
 }
 
-func newAgent(p provider.Chat, model string, conversation *session.Session, output io.Writer, registry *tool.Registry, toolErr error) *Agent {
+// NewWithApproval constructs an Agent with an explicit Tool registry and a
+// configured Approval policy. This is the production seam for wiring
+// per-tool and per-tier overrides from configuration.
+func NewWithApproval(p provider.Chat, model string, conversation *session.Session, output io.Writer, input io.Reader, registry *tool.Registry, policy approval.Policy) *Agent {
+	gate := approval.NewGate(policy, input, output)
+	return newAgent(p, model, conversation, output, input, registry, gate, nil)
+}
+
+func newAgent(p provider.Chat, model string, conversation *session.Session, output io.Writer, input io.Reader, registry *tool.Registry, gate approval.Decider, toolErr error) *Agent {
 	if output == nil {
 		output = io.Discard
+	}
+	if gate == nil {
+		gate = approval.NewGate(approval.DefaultPolicy(), input, output)
 	}
 	return &Agent{
 		provider: p,
@@ -66,6 +81,7 @@ func newAgent(p provider.Chat, model string, conversation *session.Session, outp
 		session:  conversation,
 		output:   output,
 		tools:    registry,
+		approval: gate,
 		toolErr:  toolErr,
 	}
 }
@@ -155,12 +171,9 @@ func (a *Agent) Turn(ctx context.Context, request string) (TurnResult, error) {
 			if strings.TrimSpace(call.Name) == "" {
 				return TurnResult{}, errors.New("provider returned a tool call without a name")
 			}
-			content, toolErr := a.tools.Execute(streamContext, call.Name, call.Arguments)
-			if toolErr != nil {
-				if contextErr := streamContext.Err(); contextErr != nil {
-					return TurnResult{}, fmt.Errorf("execute tool %q: %w", call.Name, contextErr)
-				}
-				content = "tool error: " + toolErr.Error()
+			content, err := a.runTool(streamContext, call)
+			if err != nil {
+				return TurnResult{}, err
 			}
 			if err := a.session.Append(session.Message{
 				Role:       session.RoleTool,
@@ -172,6 +185,33 @@ func (a *Agent) Turn(ctx context.Context, request string) (TurnResult, error) {
 			}
 		}
 	}
+}
+
+// runTool gates a single Tool Call behind Approval and executes it, returning
+// the normalized Tool Result content for the model.
+func (a *Agent) runTool(ctx context.Context, call provider.ToolCall) (string, error) {
+	declared, tierErr := a.tools.Tier(call.Name)
+	if tierErr != nil {
+		return "tool error: " + tierErr.Error(), nil
+	}
+	decision, err := a.approval.Decide(ctx, call.Name, declared)
+	if err != nil {
+		if contextErr := ctx.Err(); contextErr != nil {
+			return "", fmt.Errorf("approve tool %q: %w", call.Name, contextErr)
+		}
+		return "", fmt.Errorf("approve tool %q: %w", call.Name, err)
+	}
+	if !decision.Approved {
+		return fmt.Sprintf("The user rejected the %s tool call; it did not execute.", call.Name), nil
+	}
+	content, toolErr := a.tools.Execute(ctx, call.Name, call.Arguments)
+	if toolErr != nil {
+		if contextErr := ctx.Err(); contextErr != nil {
+			return "", fmt.Errorf("execute tool %q: %w", call.Name, contextErr)
+		}
+		content = "tool error: " + toolErr.Error()
+	}
+	return content, nil
 }
 
 func (a *Agent) consumeStep(events <-chan provider.Event) (string, []provider.ToolCall, *provider.Usage, error) {

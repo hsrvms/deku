@@ -12,9 +12,11 @@ import (
 	"strings"
 
 	"github.com/hsrvms/deku/agent"
+	"github.com/hsrvms/deku/approval"
 	"github.com/hsrvms/deku/config"
 	"github.com/hsrvms/deku/provider"
 	"github.com/hsrvms/deku/session"
+	"github.com/hsrvms/deku/tool"
 	"github.com/hsrvms/deku/version"
 )
 
@@ -70,7 +72,21 @@ func run(args []string, input io.Reader, output, errorOutput io.Writer) int {
 	}
 
 	model := provider.NewOpenAICompatible(cfg.Provider.Endpoint, cfg.Provider.APIKey)
-	runner := agent.New(model, cfg.Provider.Model, conversation, output)
+	policy, err := approval.NewPolicyFromStrings(cfg.Approval.Tools, cfg.Approval.Defaults)
+	if err != nil {
+		if writeErr := writeError(errorOutput, "deku: %v\n", err); writeErr != nil {
+			return 1
+		}
+		return 1
+	}
+	registry, err := tool.NewRegistry(".")
+	if err != nil {
+		if writeErr := writeError(errorOutput, "deku: initialize tools: %v\n", err); writeErr != nil {
+			return 1
+		}
+		return 1
+	}
+	runner := agent.NewWithApproval(model, cfg.Provider.Model, conversation, output, input, registry, policy)
 	return runConversation(runner, input, output, errorOutput)
 }
 

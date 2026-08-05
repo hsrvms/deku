@@ -51,7 +51,7 @@ func TestAgentTurnStreamsResponseAndPersistsConversation(t *testing.T) {
 		provider.Done{Usage: &provider.Usage{PromptTokens: 10, CompletionTokens: 3, TotalTokens: 13}},
 	}}
 	var output bytes.Buffer
-	agent := New(providerStub, "test-model", conversation, &output)
+	agent := New(providerStub, "test-model", conversation, &output, nil)
 
 	result, err := agent.Turn(context.Background(), "Introduce yourself.")
 	if err != nil {
@@ -117,7 +117,7 @@ func TestAgentContinuesToolCallWithReadOnlyToolResult(t *testing.T) {
 		},
 	}
 	var output bytes.Buffer
-	runner := NewWithTools(providerStub, "test-model", conversation, &output, registry)
+	runner := NewWithTools(providerStub, "test-model", conversation, &output, nil, registry)
 
 	result, err := runner.Turn(context.Background(), "Inspect main.go.")
 	if err != nil {
@@ -178,7 +178,7 @@ func TestAgentAppliesEditToolCallAndMakesExactMutation(t *testing.T) {
 		},
 	}
 	var output bytes.Buffer
-	runner := NewWithTools(providerStub, "test-model", conversation, &output, registry)
+	runner := NewWithTools(providerStub, "test-model", conversation, &output, strings.NewReader("y\n"), registry)
 
 	if _, err := runner.Turn(context.Background(), "Rename main to run."); err != nil {
 		t.Fatalf("Turn() error = %v", err)
@@ -225,7 +225,7 @@ func TestAgentEditToolFailureLeavesFileUnchanged(t *testing.T) {
 		},
 	}
 	var output bytes.Buffer
-	runner := NewWithTools(providerStub, "test-model", conversation, &output, registry)
+	runner := NewWithTools(providerStub, "test-model", conversation, &output, strings.NewReader("y\n"), registry)
 	if runner == nil {
 		t.Fatal("NewWithTools() returned nil")
 	}
@@ -245,6 +245,104 @@ func TestAgentEditToolFailureLeavesFileUnchanged(t *testing.T) {
 	}
 	if !strings.Contains(toolResult.Content, "oldText not found") {
 		t.Errorf("failed edit tool result = %q, want mismatch report", toolResult.Content)
+	}
+}
+
+func TestAgentGatesWriteToolBehindApproval(t *testing.T) {
+	root := t.TempDir()
+	file := filepath.Join(root, "main.go")
+	if err := os.WriteFile(file, []byte("package main\n\nfunc main() {}\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	registry, err := tool.NewRegistry(root)
+	if err != nil {
+		t.Fatalf("NewRegistry() error = %v", err)
+	}
+	store, err := session.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewStore() error = %v", err)
+	}
+	conversation, err := store.Create()
+	if err != nil {
+		t.Fatalf("Create() error = %v", err)
+	}
+	providerStub := &continuationProvider{
+		responses: [][]provider.Event{
+			{provider.ToolCall{ID: "call-1", Name: "edit", Arguments: `{"path":"main.go","edits":[{"oldText":"func main() {}","newText":"func run() {}"}]}`}, provider.Done{}},
+			{provider.TextDelta{Text: "Applied the approved edit."}, provider.Done{}},
+		},
+	}
+	var output bytes.Buffer
+	runner := NewWithTools(providerStub, "test-model", conversation, &output, strings.NewReader("y\n"), registry)
+
+	result, err := runner.Turn(context.Background(), "Rename main to run.")
+	if err != nil {
+		t.Fatalf("Turn() error = %v", err)
+	}
+	if result.Response != "Applied the approved edit." {
+		t.Errorf("response = %q, want final response", result.Response)
+	}
+	if !strings.Contains(output.String(), "Approve?") {
+		t.Errorf("output = %q, want approval prompt", output.String())
+	}
+	got, err := os.ReadFile(file)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != "package main\n\nfunc run() {}\n" {
+		t.Errorf("file after approved edit = %q, want func run()", got)
+	}
+	toolResult := conversation.Messages[2]
+	if toolResult.Role != session.RoleTool || toolResult.Content != "Applied 1 replacement(s) to main.go." {
+		t.Errorf("approved tool result = %#v", toolResult)
+	}
+}
+
+func TestAgentSkipsWriteToolWhenRejected(t *testing.T) {
+	root := t.TempDir()
+	file := filepath.Join(root, "main.go")
+	original := "package main\n\nfunc main() {}\n"
+	if err := os.WriteFile(file, []byte(original), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	registry, err := tool.NewRegistry(root)
+	if err != nil {
+		t.Fatalf("NewRegistry() error = %v", err)
+	}
+	store, err := session.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewStore() error = %v", err)
+	}
+	conversation, err := store.Create()
+	if err != nil {
+		t.Fatalf("Create() error = %v", err)
+	}
+	providerStub := &continuationProvider{
+		responses: [][]provider.Event{
+			{provider.ToolCall{ID: "call-1", Name: "edit", Arguments: `{"path":"main.go","edits":[{"oldText":"func main() {}","newText":"func run() {}"}]}`}, provider.Done{}},
+			{provider.TextDelta{Text: "The edit was declined."}, provider.Done{}},
+		},
+	}
+	var output bytes.Buffer
+	runner := NewWithTools(providerStub, "test-model", conversation, &output, strings.NewReader("n\n"), registry)
+
+	result, err := runner.Turn(context.Background(), "Rename main to run.")
+	if err != nil {
+		t.Fatalf("Turn() error = %v", err)
+	}
+	if result.Response != "The edit was declined." {
+		t.Errorf("response = %q, want final response", result.Response)
+	}
+	got, err := os.ReadFile(file)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != original {
+		t.Errorf("file after rejected edit = %q, want unchanged", got)
+	}
+	toolResult := conversation.Messages[2]
+	if toolResult.Role != session.RoleTool || !strings.Contains(toolResult.Content, "rejected the edit tool call") {
+		t.Errorf("rejected tool result = %#v, want denial reported to model", toolResult)
 	}
 }
 
