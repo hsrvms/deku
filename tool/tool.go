@@ -15,6 +15,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/hsrvms/deku/edit"
 	"github.com/hsrvms/deku/provider"
 )
 
@@ -55,6 +56,7 @@ func NewRegistry(root string) (*Registry, error) {
 
 	filesystem := &filesystem{root: absoluteRoot}
 	tools := []Tool{
+		&editTool{filesystem: filesystem},
 		&grepTool{filesystem: filesystem},
 		&lsTool{filesystem: filesystem},
 		&readTool{filesystem: filesystem},
@@ -144,6 +146,112 @@ type lsTool struct{ filesystem *filesystem }
 
 type lsArguments struct {
 	Path string `json:"path"`
+}
+
+type editTool struct {
+	filesystem *filesystem
+}
+
+type editArguments struct {
+	Path  string        `json:"path"`
+	Edits []edit.Change `json:"edits"`
+}
+
+func (t *editTool) Definition() provider.ToolDefinition {
+	return provider.ToolDefinition{
+		Type: "function",
+		Function: provider.FunctionDefinition{
+			Name:        "edit",
+			Description: "Apply exact-match replacements to a repository file. Every oldText must occur exactly once; if any match fails no file is changed.",
+			Parameters: objectSchema(map[string]any{
+				"path": map[string]any{
+					"type":        "string",
+					"description": "Repository-relative file path to edit.",
+				},
+				"edits": map[string]any{
+					"type":        "array",
+					"description": "Exact search-and-replace pairs applied atomically.",
+					"items": objectSchema(map[string]any{
+						"oldText": map[string]any{
+							"type":        "string",
+							"description": "Exact text to find; must appear exactly once.",
+						},
+						"newText": map[string]any{
+							"type":        "string",
+							"description": "Replacement text.",
+						},
+					}, "oldText", "newText"),
+				},
+			}, "path", "edits"),
+		},
+	}
+}
+
+func (t *editTool) Execute(ctx context.Context, raw json.RawMessage) (string, error) {
+	var arguments editArguments
+	if err := decodeArguments(raw, &arguments); err != nil {
+		return "", fmt.Errorf("edit arguments: %w", err)
+	}
+	if len(arguments.Edits) == 0 {
+		return "", errors.New("edit requires at least one replacement")
+	}
+	for index, change := range arguments.Edits {
+		if strings.TrimSpace(change.OldText) == "" {
+			return "", fmt.Errorf("edit %d: oldText is required", index+1)
+		}
+	}
+	path, err := t.filesystem.resolve(ctx, arguments.Path, false)
+	if err != nil {
+		return "", fmt.Errorf("edit path: %w", err)
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		return "", fmt.Errorf("edit %q: %w", arguments.Path, err)
+	}
+	if info.IsDir() {
+		return "", fmt.Errorf("edit %q: path is a directory", arguments.Path)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return "", fmt.Errorf("edit %q: %w", arguments.Path, err)
+	}
+	updated, err := edit.Apply(data, arguments.Edits)
+	if err != nil {
+		return "", fmt.Errorf("edit %q: %w", arguments.Path, err)
+	}
+	if err := writeFileAtomic(path, updated, info.Mode().Perm()); err != nil {
+		return "", fmt.Errorf("edit %q: %w", arguments.Path, err)
+	}
+	return fmt.Sprintf("Applied %d replacement(s) to %s.", len(arguments.Edits), arguments.Path), nil
+}
+
+// writeFileAtomic replaces path with data by writing to a temporary file in the
+// same directory and renaming it into place, so a failed write never leaves a
+// partially written target.
+func writeFileAtomic(path string, data []byte, perm fs.FileMode) error {
+	dir := filepath.Dir(path)
+	temporary, err := os.CreateTemp(dir, filepath.Base(path)+".tmp*")
+	if err != nil {
+		return err
+	}
+	temporaryName := temporary.Name()
+	defer func() { _ = os.Remove(temporaryName) }()
+	if err := temporary.Chmod(perm); err != nil {
+		_ = temporary.Close()
+		return err
+	}
+	if _, err := temporary.Write(data); err != nil {
+		_ = temporary.Close()
+		return err
+	}
+	if err := temporary.Sync(); err != nil {
+		_ = temporary.Close()
+		return err
+	}
+	if err := temporary.Close(); err != nil {
+		return err
+	}
+	return os.Rename(temporaryName, path)
 }
 
 func (t *lsTool) Definition() provider.ToolDefinition {

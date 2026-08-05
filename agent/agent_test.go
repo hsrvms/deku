@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"strings"
 	"testing"
 
 	"github.com/hsrvms/deku/provider"
@@ -65,8 +66,8 @@ func TestAgentTurnStreamsResponseAndPersistsConversation(t *testing.T) {
 	if providerStub.model != "test-model" {
 		t.Errorf("model = %q, want %q", providerStub.model, "test-model")
 	}
-	if got := toolNames(providerStub.tools); !reflect.DeepEqual(got, []string{"grep", "ls", "read"}) {
-		t.Errorf("tools = %#v, want grep, ls, read", got)
+	if got := toolNames(providerStub.tools); !reflect.DeepEqual(got, []string{"edit", "grep", "ls", "read"}) {
+		t.Errorf("tools = %#v, want edit, grep, ls, read", got)
 	}
 	if providerStub.system == "" {
 		t.Fatal("system prompt is empty")
@@ -128,8 +129,8 @@ func TestAgentContinuesToolCallWithReadOnlyToolResult(t *testing.T) {
 	if providerStub.calls != 2 {
 		t.Errorf("provider calls = %d, want 2", providerStub.calls)
 	}
-	if len(providerStub.requests[0].tools) != 3 || len(providerStub.requests[1].tools) != 3 {
-		t.Fatalf("tool definitions per step = %d and %d, want 3 and 3", len(providerStub.requests[0].tools), len(providerStub.requests[1].tools))
+	if len(providerStub.requests[0].tools) != 4 || len(providerStub.requests[1].tools) != 4 {
+		t.Fatalf("tool definitions per step = %d and %d, want 4 and 4", len(providerStub.requests[0].tools), len(providerStub.requests[1].tools))
 	}
 	secondMessages := providerStub.requests[1].messages
 	if len(secondMessages) != 3 {
@@ -149,6 +150,101 @@ func TestAgentContinuesToolCallWithReadOnlyToolResult(t *testing.T) {
 	}
 	if !reflect.DeepEqual(conversation.Messages, wantTranscript) {
 		t.Errorf("session messages = %#v, want %#v", conversation.Messages, wantTranscript)
+	}
+}
+
+func TestAgentAppliesEditToolCallAndMakesExactMutation(t *testing.T) {
+	root := t.TempDir()
+	file := filepath.Join(root, "main.go")
+	if err := os.WriteFile(file, []byte("package main\n\nfunc main() {}\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	registry, err := tool.NewRegistry(root)
+	if err != nil {
+		t.Fatalf("NewRegistry() error = %v", err)
+	}
+	store, err := session.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewStore() error = %v", err)
+	}
+	conversation, err := store.Create()
+	if err != nil {
+		t.Fatalf("Create() error = %v", err)
+	}
+	providerStub := &continuationProvider{
+		responses: [][]provider.Event{
+			{provider.ToolCall{ID: "call-1", Name: "edit", Arguments: `{"path":"main.go","edits":[{"oldText":"func main() {}","newText":"func run() {}"}]}`}, provider.Done{}},
+			{provider.TextDelta{Text: "Edited the file."}, provider.Done{}},
+		},
+	}
+	var output bytes.Buffer
+	runner := NewWithTools(providerStub, "test-model", conversation, &output, registry)
+
+	if _, err := runner.Turn(context.Background(), "Rename main to run."); err != nil {
+		t.Fatalf("Turn() error = %v", err)
+	}
+	got, err := os.ReadFile(file)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != "package main\n\nfunc run() {}\n" {
+		t.Errorf("file after edit = %q, want func run()", got)
+	}
+	toolResult := conversation.Messages[2]
+	if toolResult.Role != session.RoleTool || toolResult.ToolCallID != "call-1" {
+		t.Errorf("tool result message = %#v", toolResult)
+	}
+	if toolResult.Content != "Applied 1 replacement(s) to main.go." {
+		t.Errorf("tool result content = %q", toolResult.Content)
+	}
+}
+
+func TestAgentEditToolFailureLeavesFileUnchanged(t *testing.T) {
+	root := t.TempDir()
+	file := filepath.Join(root, "main.go")
+	original := "package main\n\nfunc main() {}\n"
+	if err := os.WriteFile(file, []byte(original), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	registry, err := tool.NewRegistry(root)
+	if err != nil {
+		t.Fatalf("NewRegistry() error = %v", err)
+	}
+	store, err := session.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewStore() error = %v", err)
+	}
+	conversation, err := store.Create()
+	if err != nil {
+		t.Fatalf("Create() error = %v", err)
+	}
+	providerStub := &continuationProvider{
+		responses: [][]provider.Event{
+			{provider.ToolCall{ID: "call-1", Name: "edit", Arguments: `{"path":"main.go","edits":[{"oldText":"func absent()","newText":"func added()"}]}`}, provider.Done{}},
+			{provider.TextDelta{Text: "The edit failed."}, provider.Done{}},
+		},
+	}
+	var output bytes.Buffer
+	runner := NewWithTools(providerStub, "test-model", conversation, &output, registry)
+	if runner == nil {
+		t.Fatal("NewWithTools() returned nil")
+	}
+	if _, err := runner.Turn(context.Background(), "Add a function."); err != nil {
+		t.Fatalf("Turn() error = %v", err)
+	}
+	got, err := os.ReadFile(file)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != original {
+		t.Errorf("file mutated after failed edit = %q, want %q", got, original)
+	}
+	toolResult := conversation.Messages[2]
+	if toolResult.Role != session.RoleTool || toolResult.Content == "" {
+		t.Errorf("failed edit tool result = %#v", toolResult)
+	}
+	if !strings.Contains(toolResult.Content, "oldText not found") {
+		t.Errorf("failed edit tool result = %q, want mismatch report", toolResult.Content)
 	}
 }
 
