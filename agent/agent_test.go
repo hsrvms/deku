@@ -66,8 +66,8 @@ func TestAgentTurnStreamsResponseAndPersistsConversation(t *testing.T) {
 	if providerStub.model != "test-model" {
 		t.Errorf("model = %q, want %q", providerStub.model, "test-model")
 	}
-	if got := toolNames(providerStub.tools); !reflect.DeepEqual(got, []string{"edit", "grep", "ls", "read"}) {
-		t.Errorf("tools = %#v, want edit, grep, ls, read", got)
+	if got := toolNames(providerStub.tools); !reflect.DeepEqual(got, []string{"edit", "grep", "ls", "read", "write"}) {
+		t.Errorf("tools = %#v, want edit, grep, ls, read, write", got)
 	}
 	if providerStub.system == "" {
 		t.Fatal("system prompt is empty")
@@ -129,8 +129,8 @@ func TestAgentContinuesToolCallWithReadOnlyToolResult(t *testing.T) {
 	if providerStub.calls != 2 {
 		t.Errorf("provider calls = %d, want 2", providerStub.calls)
 	}
-	if len(providerStub.requests[0].tools) != 4 || len(providerStub.requests[1].tools) != 4 {
-		t.Fatalf("tool definitions per step = %d and %d, want 4 and 4", len(providerStub.requests[0].tools), len(providerStub.requests[1].tools))
+	if len(providerStub.requests[0].tools) != 5 || len(providerStub.requests[1].tools) != 5 {
+		t.Fatalf("tool definitions per step = %d and %d, want 5 and 5", len(providerStub.requests[0].tools), len(providerStub.requests[1].tools))
 	}
 	secondMessages := providerStub.requests[1].messages
 	if len(secondMessages) != 3 {
@@ -342,6 +342,94 @@ func TestAgentSkipsWriteToolWhenRejected(t *testing.T) {
 	}
 	toolResult := conversation.Messages[2]
 	if toolResult.Role != session.RoleTool || !strings.Contains(toolResult.Content, "rejected the edit tool call") {
+		t.Errorf("rejected tool result = %#v, want denial reported to model", toolResult)
+	}
+}
+
+func TestAgentGatesWriteToolBehindApprovalAndCreatesFile(t *testing.T) {
+	root := t.TempDir()
+	registry, err := tool.NewRegistry(root)
+	if err != nil {
+		t.Fatalf("NewRegistry() error = %v", err)
+	}
+	store, err := session.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewStore() error = %v", err)
+	}
+	conversation, err := store.Create()
+	if err != nil {
+		t.Fatalf("Create() error = %v", err)
+	}
+	providerStub := &continuationProvider{
+		responses: [][]provider.Event{
+			{provider.ToolCall{ID: "call-1", Name: "write", Arguments: `{"path":"notes.txt","content":"hello\n"}`}, provider.Done{}},
+			{provider.TextDelta{Text: "Created the file."}, provider.Done{}},
+		},
+	}
+	var output bytes.Buffer
+	runner := NewWithTools(providerStub, "test-model", conversation, &output, strings.NewReader("y\n"), registry)
+
+	result, err := runner.Turn(context.Background(), "Create notes.txt.")
+	if err != nil {
+		t.Fatalf("Turn() error = %v", err)
+	}
+	if result.Response != "Created the file." {
+		t.Errorf("response = %q, want final response", result.Response)
+	}
+	if !strings.Contains(output.String(), "Approve?") {
+		t.Errorf("output = %q, want approval prompt", output.String())
+	}
+	got, err := os.ReadFile(filepath.Join(root, "notes.txt"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != "hello\n" {
+		t.Errorf("written file = %q, want supplied content", got)
+	}
+	toolResult := conversation.Messages[2]
+	if toolResult.Role != session.RoleTool || toolResult.ToolCallID != "call-1" {
+		t.Errorf("tool result message = %#v", toolResult)
+	}
+	if toolResult.Content != "Wrote notes.txt." {
+		t.Errorf("approved write tool result = %q", toolResult.Content)
+	}
+}
+
+func TestAgentReportsWriteToolDenialOnRejection(t *testing.T) {
+	root := t.TempDir()
+	registry, err := tool.NewRegistry(root)
+	if err != nil {
+		t.Fatalf("NewRegistry() error = %v", err)
+	}
+	store, err := session.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewStore() error = %v", err)
+	}
+	conversation, err := store.Create()
+	if err != nil {
+		t.Fatalf("Create() error = %v", err)
+	}
+	providerStub := &continuationProvider{
+		responses: [][]provider.Event{
+			{provider.ToolCall{ID: "call-1", Name: "write", Arguments: `{"path":"notes.txt","content":"hello\n"}`}, provider.Done{}},
+			{provider.TextDelta{Text: "The write was declined."}, provider.Done{}},
+		},
+	}
+	var output bytes.Buffer
+	runner := NewWithTools(providerStub, "test-model", conversation, &output, strings.NewReader("n\n"), registry)
+
+	result, err := runner.Turn(context.Background(), "Create notes.txt.")
+	if err != nil {
+		t.Fatalf("Turn() error = %v", err)
+	}
+	if result.Response != "The write was declined." {
+		t.Errorf("response = %q, want final response", result.Response)
+	}
+	if _, err := os.Stat(filepath.Join(root, "notes.txt")); !os.IsNotExist(err) {
+		t.Fatalf("rejected write created a file: %v", err)
+	}
+	toolResult := conversation.Messages[2]
+	if toolResult.Role != session.RoleTool || !strings.Contains(toolResult.Content, "rejected the write tool call") {
 		t.Errorf("rejected tool result = %#v, want denial reported to model", toolResult)
 	}
 }

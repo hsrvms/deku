@@ -18,8 +18,8 @@ func TestRegistryProvidesReadOnlyToolDefinitions(t *testing.T) {
 	}
 
 	definitions := registry.Definitions()
-	if got := definitionNames(definitions); !reflect.DeepEqual(got, []string{"edit", "grep", "ls", "read"}) {
-		t.Fatalf("tool names = %#v, want edit, grep, ls, read", got)
+	if got := definitionNames(definitions); !reflect.DeepEqual(got, []string{"edit", "grep", "ls", "read", "write"}) {
+		t.Fatalf("tool names = %#v, want edit, grep, ls, read, write", got)
 	}
 	for _, definition := range definitions {
 		if definition.Type != "function" {
@@ -194,10 +194,11 @@ func TestRegistryDeclaresToolTiers(t *testing.T) {
 	}
 
 	cases := map[string]approval.Tier{
-		"ls":   approval.Read,
-		"read": approval.Read,
-		"grep": approval.Read,
-		"edit": approval.Write,
+		"ls":    approval.Read,
+		"read":  approval.Read,
+		"grep":  approval.Read,
+		"edit":  approval.Write,
+		"write": approval.Write,
 	}
 	for name, want := range cases {
 		got, tierErr := registry.Tier(name)
@@ -210,6 +211,150 @@ func TestRegistryDeclaresToolTiers(t *testing.T) {
 	}
 	if _, tierErr := registry.Tier("unknown"); tierErr == nil {
 		t.Errorf("Tier(unknown) error = nil, want error")
+	}
+}
+
+func TestWriteToolCreatesNewFile(t *testing.T) {
+	root := t.TempDir()
+	registry, err := NewRegistry(root)
+	if err != nil {
+		t.Fatalf("NewRegistry() error = %v", err)
+	}
+
+	result, err := registry.Execute(context.Background(), "write", `{"path":"main.go","content":"package main\n\nfunc main() {}\n"}`)
+	if err != nil {
+		t.Fatalf("write error = %v", err)
+	}
+	if result != "Wrote main.go." {
+		t.Errorf("write result = %q", result)
+	}
+	got, err := os.ReadFile(filepath.Join(root, "main.go"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != "package main\n\nfunc main() {}\n" {
+		t.Errorf("written file = %q", got)
+	}
+}
+
+func TestWriteToolCreatesNestedFileWithParentDirectories(t *testing.T) {
+	root := t.TempDir()
+	registry, err := NewRegistry(root)
+	if err != nil {
+		t.Fatalf("NewRegistry() error = %v", err)
+	}
+
+	if _, err := registry.Execute(context.Background(), "write", `{"path":"src/index.html","content":"<title>Deku</title>\n"}`); err != nil {
+		t.Fatalf("write error = %v", err)
+	}
+	got, err := os.ReadFile(filepath.Join(root, "src", "index.html"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != "<title>Deku</title>\n" {
+		t.Errorf("written file = %q", got)
+	}
+}
+
+func TestWriteToolPopulatesEmptyFile(t *testing.T) {
+	root := t.TempDir()
+	file := filepath.Join(root, "placeholder.txt")
+	if err := os.WriteFile(file, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	registry, err := NewRegistry(root)
+	if err != nil {
+		t.Fatalf("NewRegistry() error = %v", err)
+	}
+
+	if _, err := registry.Execute(context.Background(), "write", `{"path":"placeholder.txt","content":"filled\n"}`); err != nil {
+		t.Fatalf("write error = %v", err)
+	}
+	got, err := os.ReadFile(file)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != "filled\n" {
+		t.Errorf("populated file = %q", got)
+	}
+}
+
+func TestWriteToolRefusesNonEmptyOverwriteWithoutFlag(t *testing.T) {
+	root := t.TempDir()
+	file := filepath.Join(root, "main.go")
+	original := "package main\n\nfunc main() {}\n"
+	if err := os.WriteFile(file, []byte(original), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	registry, err := NewRegistry(root)
+	if err != nil {
+		t.Fatalf("NewRegistry() error = %v", err)
+	}
+
+	_, err = registry.Execute(context.Background(), "write", `{"path":"main.go","content":"clobbered\n"}`)
+	if err == nil {
+		t.Fatal("write error = nil, want refusal for non-empty target")
+	}
+	got, readErr := os.ReadFile(file)
+	if readErr != nil {
+		t.Fatal(readErr)
+	}
+	if string(got) != original {
+		t.Errorf("file mutated after refusal = %q, want %q", got, original)
+	}
+}
+
+func TestWriteToolHonorsOverwriteFlag(t *testing.T) {
+	root := t.TempDir()
+	file := filepath.Join(root, "main.go")
+	if err := os.WriteFile(file, []byte("package main\n\nfunc main() {}\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	registry, err := NewRegistry(root)
+	if err != nil {
+		t.Fatalf("NewRegistry() error = %v", err)
+	}
+
+	if _, err := registry.Execute(context.Background(), "write", `{"path":"main.go","content":"replaced\n","overwrite":true}`); err != nil {
+		t.Fatalf("write error = %v", err)
+	}
+	got, err := os.ReadFile(file)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != "replaced\n" {
+		t.Errorf("overwritten file = %q", got)
+	}
+}
+
+func TestWriteToolRejectsPathTraversalAndSymlinkEscape(t *testing.T) {
+	root := t.TempDir()
+	registry, err := NewRegistry(root)
+	if err != nil {
+		t.Fatalf("NewRegistry() error = %v", err)
+	}
+
+	cases := []string{
+		`{"path":"../outside.txt","content":"x"}`,
+		`{"path":"a/../../escape.txt","content":"x"}`,
+		`{"path":"/absolute/path.txt","content":"x"}`,
+	}
+	for _, args := range cases {
+		if _, err := registry.Execute(context.Background(), "write", args); err == nil {
+			t.Errorf("write %s: Execute() error = nil, want error", args)
+		}
+	}
+
+	// A symlink inside the root pointing outside must not be escapable.
+	external := t.TempDir()
+	if err := os.Symlink(external, filepath.Join(root, "escape")); err != nil {
+		t.Fatalf("create symlink: %v", err)
+	}
+	if _, err := registry.Execute(context.Background(), "write", `{"path":"escape/victim.txt","content":"x"}`); err == nil {
+		t.Error("write through escaping symlink: Execute() error = nil, want error")
+	}
+	if _, err := os.Stat(filepath.Join(external, "victim.txt")); !os.IsNotExist(err) {
+		t.Errorf("write escaped repository root; external file exists or stat failed: %v", err)
 	}
 }
 

@@ -74,13 +74,16 @@ Print the embedded build version without loading Provider configuration:
 go run ./cmd/deku/ --version
 ```
 
-The chat experience supports multi-Step Turns with `ls`, `read`, `grep`, and
-`edit` tools. Model text is streamed to the terminal as it arrives; tool calls
-and results are retained in the append-only Session transcript.
+The chat experience supports multi-Step Turns with `ls`, `read`, `grep`,
+`write`, and `edit` tools. Model text is streamed to the terminal as it arrives;
+tool calls and results are retained in the append-only Session transcript.
 
 Read-only tools (`ls`, `read`, `grep`) run without a prompt. Mutating tools
-(`edit`) pause and ask you to approve (`y`) or reject (`n`) before running;
-a rejection is reported back to the model and the tool does not execute.
+(`write`, `edit`) pause and ask you to approve (`y`) or reject (`n`) before
+running; a rejection is reported back to the model and the tool does not
+negotiate. `write` creates a new file, fills an empty file, or—when overwrite is
+requested—replaces a whole file's content; `edit` makes exact-match replacements
+inside an existing file.
 
 You can override the default classification in `~/.deku/config.yaml`. Per-tool
 tier overrides change how a named tool is classified, and per-tier defaults
