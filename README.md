@@ -116,6 +116,37 @@ repo_map:
     - "*.gen.go"      # hide generated files
 ```
 
+## Git safety
+
+Deku can preserve a recoverable, attributable Git workflow. Agent Commits are
+opt-in and configured through `agent_commits.mode` in `~/.deku/config.yaml` (or
+the `DEKU_AGENT_COMMITS` environment variable):
+
+- `off` (default) — never create Agent Commits.
+- `ask` — ask before creating each Agent Commit after a completed Turn.
+- `on` — create an Agent Commit automatically after each completed Turn.
+
+```yaml
+agent_commits:
+  mode: off        # off | ask | on
+  validation: "go test ./..."   # command run before an Agent Commit
+```
+
+With Agent Commits enabled, Deku inspects the repository at startup. A clean
+repository with completed, validated work receives an Agent Commit containing
+only the files the Agent changed; Deku stages each file individually and never
+uses `git add -A`. A dirty repository asks whether to create a **Checkpoint**
+(commit your existing work), **stash** it with an identifiable message, continue
+without Agent Commits, or cancel, so pre-existing work is never silently
+committed or hidden.
+
+Validation runs after each completed Turn before any Agent Commit. If validation
+fails, or the Turn is interrupted or the Provider fails, the Agent's work remains
+uncommitted for you to inspect. If the repository changes externally during a
+Turn, Deku pauses without committing. A successful commit is a recoverable
+boundary, not proof that the repository is correct: Deku reports Validation
+results separately from the commit it created.
+
 ## Development
 
 Run the repository's complete local validation suite with:

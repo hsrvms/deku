@@ -12,9 +12,10 @@ import (
 
 // Config holds all configuration for Deku.
 type Config struct {
-	Provider ProviderConfig
-	Approval ApprovalConfig
-	RepoMap  RepoMapConfig
+	Provider     ProviderConfig
+	Approval     ApprovalConfig
+	RepoMap      RepoMapConfig
+	AgentCommits AgentCommitsConfig
 }
 
 // ProviderConfig holds the OpenAI-compatible provider configuration.
@@ -39,6 +40,13 @@ type RepoMapConfig struct {
 	Exclude []string
 }
 
+// AgentCommitsConfig controls Git safety. Mode is off, ask, or on; Validation
+// is the command run after a completed Turn before an Agent Commit is created.
+type AgentCommitsConfig struct {
+	Mode       string
+	Validation string
+}
+
 // fileConfig mirrors the structure of ~/.deku/config.yaml.
 type fileConfig struct {
 	Provider struct {
@@ -53,6 +61,10 @@ type fileConfig struct {
 	RepoMap struct {
 		Exclude []string `yaml:"exclude"`
 	} `yaml:"repo_map"`
+	AgentCommits struct {
+		Mode       string `yaml:"mode"`
+		Validation string `yaml:"validation"`
+	} `yaml:"agent_commits"`
 }
 
 // Load reads configuration from ~/.deku/config.yaml and environment variables.
@@ -69,6 +81,8 @@ func Load() (*Config, error) {
 		cfg.Approval.Tools = fc.Approval.Tools
 		cfg.Approval.Defaults = fc.Approval.Defaults
 		cfg.RepoMap.Exclude = fc.RepoMap.Exclude
+		cfg.AgentCommits.Mode = fc.AgentCommits.Mode
+		cfg.AgentCommits.Validation = fc.AgentCommits.Validation
 	}
 
 	// Override with environment variables.
@@ -81,6 +95,9 @@ func Load() (*Config, error) {
 	if v := os.Getenv("DEKU_PROVIDER_MODEL"); v != "" {
 		cfg.Provider.Model = v
 	}
+	if v := os.Getenv("DEKU_AGENT_COMMITS"); v != "" {
+		cfg.AgentCommits.Mode = v
+	}
 
 	// Validate required fields.
 	if cfg.Provider.Endpoint == "" {
@@ -91,6 +108,14 @@ func Load() (*Config, error) {
 	}
 	if cfg.Provider.Model == "" {
 		return nil, fmt.Errorf("provider model is required: set DEKU_PROVIDER_MODEL or provider.model in ~/.deku/config.yaml")
+	}
+
+	// Apply defaults for optional Agent Commits configuration.
+	if cfg.AgentCommits.Mode == "" {
+		cfg.AgentCommits.Mode = "off"
+	}
+	if cfg.AgentCommits.Validation == "" {
+		cfg.AgentCommits.Validation = "go test ./..."
 	}
 
 	return cfg, nil

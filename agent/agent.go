@@ -3,17 +3,21 @@
 package agent
 
 import (
+	"bufio"
 	"context"
 	"errors"
 	"fmt"
 	"io"
+	"os"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/hsrvms/deku/approval"
 	"github.com/hsrvms/deku/prompt"
 	"github.com/hsrvms/deku/provider"
 	"github.com/hsrvms/deku/repomap"
+	"github.com/hsrvms/deku/repository"
 	"github.com/hsrvms/deku/session"
 	"github.com/hsrvms/deku/tool"
 )
@@ -24,23 +28,43 @@ type Runner interface {
 }
 
 // TurnResult contains the completed model response and any usage reported by
-// the Provider.
+// the Provider. When Git safety is active it also reports the Validation
+// outcome and any Agent Commit or stash created during the Turn.
 type TurnResult struct {
-	Response string
-	Usage    *provider.Usage
+	Response   string
+	Usage      *provider.Usage
+	Validation *ValidationResult
+	CommitID   string
+	StashRef   string
+}
+
+// ValidationResult reports the repository Validation coordinate for a Turn
+// once Git safety is active. It distinguishes a failing check from Git
+// recoverability: a passed Validation is a precondition for an Agent Commit,
+// never proof that the repository is correct.
+type ValidationResult struct {
+	Command string
+	Passed  bool
+	Output  string
 }
 
 // Agent owns one conversation and drives a multi-Step Turn at a time.
 type Agent struct {
-	provider   provider.Chat
-	model      string
-	session    *session.Session
-	output     io.Writer
-	tools      *tool.Registry
-	approval   approval.Decider
-	toolErr    error
-	repoMap    *repomap.Builder
-	repoMapErr error
+	provider      provider.Chat
+	model         string
+	session       *session.Session
+	output        io.Writer
+	input         *bufio.Reader
+	tools         *tool.Registry
+	approval      approval.Decider
+	toolErr       error
+	repoMap       *repomap.Builder
+	repoMapErr    error
+	repo          *repository.Repo
+	commitMode    repository.Mode
+	validationCmd string
+	initialized   bool
+	stashRef      string
 
 	turnMu sync.Mutex
 }
@@ -54,20 +78,20 @@ var _ Runner = (*Agent)(nil)
 // standard input.
 func New(p provider.Chat, model string, conversation *session.Session, output io.Writer, input io.Reader) *Agent {
 	registry, err := tool.NewRegistry(".")
-	return newAgent(p, model, conversation, output, input, registry, nil, err, nil)
+	return newAgent(p, model, conversation, output, input, registry, approval.DefaultPolicy(), nil, err, nil, nil, repository.ModeOff, "")
 }
 
 // NewWithTools constructs an Agent with an explicit Tool registry. This is the
 // test and embedding seam for choosing the repository being explored.
 func NewWithTools(p provider.Chat, model string, conversation *session.Session, output io.Writer, input io.Reader, registry *tool.Registry) *Agent {
-	return newAgent(p, model, conversation, output, input, registry, nil, nil, nil)
+	return newAgent(p, model, conversation, output, input, registry, approval.DefaultPolicy(), nil, nil, nil, nil, repository.ModeOff, "")
 }
 
 // NewWithApproval constructs an Agent with an explicit Tool registry and a
 // configured Approval policy. This is the production seam for wiring
 // per-tool and per-tier overrides from configuration.
 func NewWithApproval(p provider.Chat, model string, conversation *session.Session, output io.Writer, input io.Reader, registry *tool.Registry, policy approval.Policy) *Agent {
-	return NewWithPolicy(p, model, conversation, output, input, registry, policy, nil)
+	return newAgent(p, model, conversation, output, input, registry, policy, nil, nil, nil, nil, repository.ModeOff, "")
 }
 
 // NewWithPolicy constructs an Agent with an explicit Tool registry, a
@@ -75,25 +99,56 @@ func NewWithApproval(p provider.Chat, model string, conversation *session.Sessio
 // exclusion patterns are gitignore-style globs applied in addition to any
 // .gitignore files when building the Repository Map on every Step.
 func NewWithPolicy(p provider.Chat, model string, conversation *session.Session, output io.Writer, input io.Reader, registry *tool.Registry, policy approval.Policy, exclude []string) *Agent {
-	gate := approval.NewGate(policy, input, output)
-	return newAgent(p, model, conversation, output, input, registry, gate, nil, exclude)
+	return newAgent(p, model, conversation, output, input, registry, policy, nil, nil, exclude, nil, repository.ModeOff, "")
 }
 
-func newAgent(p provider.Chat, model string, conversation *session.Session, output io.Writer, input io.Reader, registry *tool.Registry, gate approval.Decider, toolErr error, exclude []string) *Agent {
+// NewWithGit constructs an Agent with Git safety enabled. The Repository is a
+// real Git working tree; mode is the Agent Commit configuration (off, ask, or
+// on) and validation is the command run after a completed Turn before any
+// Agent Commit. This is the production and test seam for dirty-tree handling,
+// Checkpoints, stashes, Validation, external-change detection, and Agent
+// Commit attribution.
+func NewWithGit(p provider.Chat, model string, conversation *session.Session, output io.Writer, input io.Reader, registry *tool.Registry, policy approval.Policy, exclude []string, repo *repository.Repo, mode repository.Mode, validation string) *Agent {
+	return newAgent(p, model, conversation, output, input, registry, policy, nil, nil, exclude, repo, mode, validation)
+}
+
+func newAgent(p provider.Chat, model string, conversation *session.Session, output io.Writer, input io.Reader, registry *tool.Registry, policy approval.Policy, gate approval.Decider, toolErr error, exclude []string, repo *repository.Repo, mode repository.Mode, validationCmd string) *Agent {
 	if output == nil {
 		output = io.Discard
 	}
+	if input == nil {
+		input = os.Stdin
+	}
+	var reader *bufio.Reader
+	if shared, ok := input.(*bufio.Reader); ok {
+		reader = shared
+	} else {
+		reader = bufio.NewReader(input)
+	}
 	if gate == nil {
-		gate = approval.NewGate(approval.DefaultPolicy(), input, output)
+		gate = approval.NewGate(policy, reader, output)
+	}
+	if mode != repository.ModeOn && mode != repository.ModeAsk {
+		mode = repository.ModeOff
+	}
+	if repo == nil {
+		mode = repository.ModeOff
+	}
+	if strings.TrimSpace(validationCmd) == "" {
+		validationCmd = defaultValidationCommand
 	}
 	clone := &Agent{
-		provider: p,
-		model:    model,
-		session:  conversation,
-		output:   output,
-		tools:    registry,
-		approval: gate,
-		toolErr:  toolErr,
+		provider:      p,
+		model:         model,
+		session:       conversation,
+		output:        output,
+		input:         reader,
+		tools:         registry,
+		approval:      gate,
+		toolErr:       toolErr,
+		repo:          repo,
+		commitMode:    mode,
+		validationCmd: validationCmd,
 	}
 	if registry != nil && toolErr == nil {
 		builder, err := repomap.NewBuilder(registry.Root(), exclude)
@@ -105,6 +160,10 @@ func newAgent(p provider.Chat, model string, conversation *session.Session, outp
 	}
 	return clone
 }
+
+// defaultValidationCommand is the check run after a completed Turn before an
+// Agent Commit. Callers may override it through configuration.
+const defaultValidationCommand = "go test ./..."
 
 // Turn accepts one user request and drives Provider Steps until the model
 // returns a response without Tool Calls.
@@ -141,13 +200,28 @@ func (a *Agent) Turn(ctx context.Context, request string) (TurnResult, error) {
 	a.turnMu.Lock()
 	defer a.turnMu.Unlock()
 
+	if err := a.initialize(ctx); err != nil {
+		return TurnResult{}, err
+	}
+
 	if err := a.session.Append(session.Message{Role: session.RoleUser, Content: request}); err != nil {
 		return TurnResult{}, fmt.Errorf("record user request: %w", err)
+	}
+
+	var snapshot repository.Snapshot
+	if a.gitEnabled() {
+		a.tools.ResetTouched()
+		var err error
+		snapshot, err = a.repo.Snapshot()
+		if err != nil {
+			return TurnResult{}, fmt.Errorf("snapshot repository: %w", err)
+		}
 	}
 
 	streamContext, cancel := context.WithCancel(ctx)
 	defer cancel()
 	var totalUsage *provider.Usage
+	var finalResponse string
 	for {
 		if err := streamContext.Err(); err != nil {
 			return TurnResult{}, fmt.Errorf("turn canceled: %w", err)
@@ -188,7 +262,8 @@ func (a *Agent) Turn(ctx context.Context, request string) (TurnResult, error) {
 			return TurnResult{}, fmt.Errorf("record assistant response: %w", err)
 		}
 		if len(calls) == 0 {
-			return TurnResult{Response: response, Usage: totalUsage}, nil
+			finalResponse = response
+			break
 		}
 
 		for _, call := range calls {
@@ -212,6 +287,18 @@ func (a *Agent) Turn(ctx context.Context, request string) (TurnResult, error) {
 			}
 		}
 	}
+
+	result := TurnResult{
+		Response: finalResponse,
+		Usage:    totalUsage,
+		StashRef: a.stashRef,
+	}
+	if a.gitEnabled() {
+		if err := a.finishTurn(ctx, snapshot, request, &result); err != nil {
+			return TurnResult{}, err
+		}
+	}
+	return result, nil
 }
 
 // systemPrompt assembles the per-Step system prompt, refreshing the
@@ -363,4 +450,243 @@ func writeOutput(output io.Writer, text string) error {
 		return io.ErrShortWrite
 	}
 	return nil
+}
+
+// gitEnabled reports whether Git safety is active for this Agent. It is active
+// only when a Repository is attached and the Agent Commit mode is on or ask; a
+// dirty repository may reduce mode to off for the rest of the session.
+func (a *Agent) gitEnabled() bool {
+	return a.repo != nil && a.commitMode != repository.ModeOff
+}
+
+// initialize performs the one-time dirty-tree inspection at the start of a
+// session. A dirty repository with Agent Commits enabled requires the user to
+// choose a Checkpoint, a stash, continuing without commits, or cancellation,
+// so pre-existing work is never silently committed or hidden.
+func (a *Agent) initialize(ctx context.Context) error {
+	if a.initialized || !a.gitEnabled() {
+		return nil
+	}
+	state, err := a.repo.State()
+	if err != nil {
+		return fmt.Errorf("inspect repository: %w", err)
+	}
+	if state.Dirty() {
+		action, err := a.chooseDirtyAction(ctx, state)
+		if err != nil {
+			return err
+		}
+		switch action {
+		case dirtyCheckpoint:
+			if _, err := a.repo.Checkpoint("deku: checkpoint pre-existing work before agent turn"); err != nil {
+				return fmt.Errorf("create checkpoint: %w", err)
+			}
+		case dirtyStash:
+			ref, err := a.repo.Stash(stashMessage())
+			if err != nil {
+				return fmt.Errorf("stash repository: %w", err)
+			}
+			a.stashRef = ref
+		case dirtyContinue:
+			a.commitMode = repository.ModeOff
+		case dirtyCancel:
+			return errors.New("canceled: repository has uncommitted changes; no Agent work was performed")
+		}
+	}
+	a.initialized = true
+	return nil
+}
+
+// dirtyAction is a user decision for a dirty repository at session start.
+type dirtyAction int
+
+// Dirty repository handling choices.
+const (
+	dirtyCheckpoint dirtyAction = iota
+	dirtyStash
+	dirtyContinue
+	dirtyCancel
+)
+
+// chooseDirtyAction prompts the user to resolve a dirty repository when Agent
+// Commits are enabled, re-prompting until a valid choice is entered.
+func (a *Agent) chooseDirtyAction(ctx context.Context, state repository.State) (dirtyAction, error) {
+	prompt := fmt.Sprintf(
+		"The repository has uncommitted changes (staged: %d, unstaged: %d, untracked: %d). Agent Commits are enabled.\n"+
+			"Choose how to proceed:\n"+
+			"  1. Create a Checkpoint (commit existing work)\n"+
+			"  2. Stash existing work\n"+
+			"  3. Continue without Agent Commits\n"+
+			"  4. Cancel\n"+
+			"Enter choice [1-4]: ",
+		len(state.Staged), len(state.Unstaged), len(state.Untracked))
+	if _, err := io.WriteString(a.output, prompt); err != nil {
+		return 0, fmt.Errorf("display repository prompt: %w", err)
+	}
+	for {
+		line, err := a.readLine(ctx)
+		if err != nil {
+			return 0, err
+		}
+		switch strings.TrimSpace(line) {
+		case "1":
+			return dirtyCheckpoint, nil
+		case "2":
+			return dirtyStash, nil
+		case "3":
+			return dirtyContinue, nil
+		case "4":
+			return dirtyCancel, nil
+		default:
+			if _, err := io.WriteString(a.output, "Please enter 1, 2, 3, or 4: "); err != nil {
+				return 0, fmt.Errorf("display repository prompt: %w", err)
+			}
+		}
+	}
+}
+
+// stashMessage returns a recognizable, unique message for a Deku-created stash
+// so the precise stash can be identified and restored later.
+func stashMessage() string {
+	return "deku: pre-existing work stashed before agent turn " + time.Now().UTC().Format("20060102T150405Z")
+}
+
+// finishTurn attributes working-tree changes, runs Validation, and creates an
+// Agent Commit when the mode and the user allow it. It runs only after a Turn
+// completed without interruption or provider failure.
+func (a *Agent) finishTurn(ctx context.Context, snapshot repository.Snapshot, request string, result *TurnResult) error {
+	touched := a.tools.Touched()
+	changed, err := a.repo.Changed(snapshot)
+	if err != nil {
+		return fmt.Errorf("detect repository changes: %w", err)
+	}
+	touchedSet := make(map[string]bool, len(touched))
+	for _, path := range touched {
+		touchedSet[path] = true
+	}
+	var agentOwned, external []string
+	for _, path := range changed {
+		if touchedSet[path] {
+			agentOwned = append(agentOwned, path)
+		} else {
+			external = append(external, path)
+		}
+	}
+	if len(external) > 0 {
+		return fmt.Errorf("external repository changes detected during the Turn (%s); pausing without an Agent Commit", strings.Join(external, ", "))
+	}
+	if len(agentOwned) == 0 {
+		return nil
+	}
+
+	validation, err := a.repo.Validate(ctx, a.validationCmd)
+	if err != nil {
+		return fmt.Errorf("run validation: %w", err)
+	}
+	result.Validation = &ValidationResult{
+		Command: validation.Command,
+		Passed:  validation.Passed,
+		Output:  validation.Output,
+	}
+	if !validation.Passed {
+		// Failed Validation leaves the Agent's work uncommitted for inspection.
+		return nil
+	}
+
+	shouldCommit := false
+	switch a.commitMode {
+	case repository.ModeOn:
+		shouldCommit = true
+	case repository.ModeAsk:
+		approved, err := a.askCommit(ctx)
+		if err != nil {
+			return err
+		}
+		shouldCommit = approved
+	}
+	if !shouldCommit {
+		return nil
+	}
+
+	commitID, err := a.repo.Commit(agentOwned, commitMessage(request))
+	if err != nil {
+		return fmt.Errorf("create agent commit: %w", err)
+	}
+	result.CommitID = commitID
+	return nil
+}
+
+// askCommit prompts the user whether to create an Agent Commit after a
+// completed, validated Turn in ask mode.
+func (a *Agent) askCommit(ctx context.Context) (bool, error) {
+	if _, err := io.WriteString(a.output, "Validation passed. Create an Agent Commit for this Turn? [y/n] "); err != nil {
+		return false, fmt.Errorf("display commit prompt: %w", err)
+	}
+	for {
+		line, err := a.readLine(ctx)
+		if err != nil {
+			return false, err
+		}
+		switch strings.ToLower(line) {
+		case "y", "yes":
+			return true, nil
+		case "n", "no":
+			return false, nil
+		default:
+			if _, err := io.WriteString(a.output, "Please answer y (commit) or n (skip): "); err != nil {
+				return false, fmt.Errorf("display commit prompt: %w", err)
+			}
+		}
+	}
+}
+
+// commitMessage renders a recognizable Agent Commit message from the request.
+func commitMessage(request string) string {
+	summary := strings.TrimSpace(request)
+	runes := []rune(summary)
+	if len(runes) > 60 {
+		return "deku: " + string(runes[:60])
+	}
+	return "deku: " + summary
+}
+
+// readLine reads the next non-empty line from the Agent's shared input reader,
+// honoring context cancellation. The reader is shared with the Approval gate so
+// buffered input is never double-buffered between the two.
+func (a *Agent) readLine(ctx context.Context) (string, error) {
+	type result struct {
+		line string
+		err  error
+	}
+	ch := make(chan result, 1)
+	go func() {
+		line, err := a.scanLine()
+		select {
+		case ch <- result{line: line, err: err}:
+		case <-ctx.Done():
+		}
+	}()
+	select {
+	case r := <-ch:
+		return r.line, r.err
+	case <-ctx.Done():
+		return "", ctx.Err()
+	}
+}
+
+// scanLine reads the next non-empty line from the Agent's input reader.
+func (a *Agent) scanLine() (string, error) {
+	for {
+		line, err := a.input.ReadString('\n')
+		line = strings.TrimSpace(line)
+		if line != "" {
+			return line, nil
+		}
+		if err != nil {
+			if errors.Is(err, io.EOF) {
+				return "", errors.New("input ended before a response")
+			}
+			return "", err
+		}
+	}
 }
