@@ -14,6 +14,7 @@ import (
 type Config struct {
 	Provider ProviderConfig
 	Approval ApprovalConfig
+	RepoMap  RepoMapConfig
 }
 
 // ProviderConfig holds the OpenAI-compatible provider configuration.
@@ -31,6 +32,13 @@ type ApprovalConfig struct {
 	Defaults map[string]string
 }
 
+// RepoMapConfig holds Repository Map configuration. Exclude lists
+// gitignore-style glob patterns applied in addition to any .gitignore files
+// when building the map on every Step.
+type RepoMapConfig struct {
+	Exclude []string
+}
+
 // fileConfig mirrors the structure of ~/.deku/config.yaml.
 type fileConfig struct {
 	Provider struct {
@@ -42,6 +50,9 @@ type fileConfig struct {
 		Tools    map[string]string `yaml:"tools"`
 		Defaults map[string]string `yaml:"defaults"`
 	} `yaml:"approval"`
+	RepoMap struct {
+		Exclude []string `yaml:"exclude"`
+	} `yaml:"repo_map"`
 }
 
 // Load reads configuration from ~/.deku/config.yaml and environment variables.
@@ -57,6 +68,7 @@ func Load() (*Config, error) {
 		cfg.Provider.Model = fc.Provider.Model
 		cfg.Approval.Tools = fc.Approval.Tools
 		cfg.Approval.Defaults = fc.Approval.Defaults
+		cfg.RepoMap.Exclude = fc.RepoMap.Exclude
 	}
 
 	// Override with environment variables.

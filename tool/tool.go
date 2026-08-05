@@ -79,6 +79,14 @@ func NewRegistry(root string) (*Registry, error) {
 	return registry, nil
 }
 
+// Root returns the absolute repository root the Registry confines tools to.
+func (r *Registry) Root() string {
+	if r == nil {
+		return ""
+	}
+	return r.root
+}
+
 // Definitions returns the model-visible definitions in stable name order.
 func (r *Registry) Definitions() []provider.ToolDefinition {
 	if r == nil {

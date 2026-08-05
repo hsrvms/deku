@@ -86,7 +86,7 @@ func run(args []string, input io.Reader, output, errorOutput io.Writer) int {
 		}
 		return 1
 	}
-	runner := agent.NewWithApproval(model, cfg.Provider.Model, conversation, output, input, registry, policy)
+	runner := agent.NewWithPolicy(model, cfg.Provider.Model, conversation, output, input, registry, policy, cfg.RepoMap.Exclude)
 	return runConversation(runner, input, output, errorOutput)
 }
 

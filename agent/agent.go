@@ -13,6 +13,7 @@ import (
 	"github.com/hsrvms/deku/approval"
 	"github.com/hsrvms/deku/prompt"
 	"github.com/hsrvms/deku/provider"
+	"github.com/hsrvms/deku/repomap"
 	"github.com/hsrvms/deku/session"
 	"github.com/hsrvms/deku/tool"
 )
@@ -31,13 +32,15 @@ type TurnResult struct {
 
 // Agent owns one conversation and drives a multi-Step Turn at a time.
 type Agent struct {
-	provider provider.Chat
-	model    string
-	session  *session.Session
-	output   io.Writer
-	tools    *tool.Registry
-	approval approval.Decider
-	toolErr  error
+	provider   provider.Chat
+	model      string
+	session    *session.Session
+	output     io.Writer
+	tools      *tool.Registry
+	approval   approval.Decider
+	toolErr    error
+	repoMap    *repomap.Builder
+	repoMapErr error
 
 	turnMu sync.Mutex
 }
@@ -51,31 +54,39 @@ var _ Runner = (*Agent)(nil)
 // standard input.
 func New(p provider.Chat, model string, conversation *session.Session, output io.Writer, input io.Reader) *Agent {
 	registry, err := tool.NewRegistry(".")
-	return newAgent(p, model, conversation, output, input, registry, nil, err)
+	return newAgent(p, model, conversation, output, input, registry, nil, err, nil)
 }
 
 // NewWithTools constructs an Agent with an explicit Tool registry. This is the
 // test and embedding seam for choosing the repository being explored.
 func NewWithTools(p provider.Chat, model string, conversation *session.Session, output io.Writer, input io.Reader, registry *tool.Registry) *Agent {
-	return newAgent(p, model, conversation, output, input, registry, nil, nil)
+	return newAgent(p, model, conversation, output, input, registry, nil, nil, nil)
 }
 
 // NewWithApproval constructs an Agent with an explicit Tool registry and a
 // configured Approval policy. This is the production seam for wiring
 // per-tool and per-tier overrides from configuration.
 func NewWithApproval(p provider.Chat, model string, conversation *session.Session, output io.Writer, input io.Reader, registry *tool.Registry, policy approval.Policy) *Agent {
-	gate := approval.NewGate(policy, input, output)
-	return newAgent(p, model, conversation, output, input, registry, gate, nil)
+	return NewWithPolicy(p, model, conversation, output, input, registry, policy, nil)
 }
 
-func newAgent(p provider.Chat, model string, conversation *session.Session, output io.Writer, input io.Reader, registry *tool.Registry, gate approval.Decider, toolErr error) *Agent {
+// NewWithPolicy constructs an Agent with an explicit Tool registry, a
+// configured Approval policy, and repository-map exclusion patterns. The
+// exclusion patterns are gitignore-style globs applied in addition to any
+// .gitignore files when building the Repository Map on every Step.
+func NewWithPolicy(p provider.Chat, model string, conversation *session.Session, output io.Writer, input io.Reader, registry *tool.Registry, policy approval.Policy, exclude []string) *Agent {
+	gate := approval.NewGate(policy, input, output)
+	return newAgent(p, model, conversation, output, input, registry, gate, nil, exclude)
+}
+
+func newAgent(p provider.Chat, model string, conversation *session.Session, output io.Writer, input io.Reader, registry *tool.Registry, gate approval.Decider, toolErr error, exclude []string) *Agent {
 	if output == nil {
 		output = io.Discard
 	}
 	if gate == nil {
 		gate = approval.NewGate(approval.DefaultPolicy(), input, output)
 	}
-	return &Agent{
+	clone := &Agent{
 		provider: p,
 		model:    model,
 		session:  conversation,
@@ -84,6 +95,15 @@ func newAgent(p provider.Chat, model string, conversation *session.Session, outp
 		approval: gate,
 		toolErr:  toolErr,
 	}
+	if registry != nil && toolErr == nil {
+		builder, err := repomap.NewBuilder(registry.Root(), exclude)
+		if err != nil {
+			clone.repoMapErr = err
+		} else {
+			clone.repoMap = builder
+		}
+	}
+	return clone
 }
 
 // Turn accepts one user request and drives Provider Steps until the model
@@ -110,6 +130,9 @@ func (a *Agent) Turn(ctx context.Context, request string) (TurnResult, error) {
 	if a.tools == nil {
 		return TurnResult{}, errors.New("agent tools are required")
 	}
+	if a.repoMapErr != nil {
+		return TurnResult{}, fmt.Errorf("initialize repository map: %w", a.repoMapErr)
+	}
 	request = strings.TrimSpace(request)
 	if request == "" {
 		return TurnResult{}, errors.New("agent request is required")
@@ -130,10 +153,14 @@ func (a *Agent) Turn(ctx context.Context, request string) (TurnResult, error) {
 			return TurnResult{}, fmt.Errorf("turn canceled: %w", err)
 		}
 		messages := providerMessages(a.session.Messages)
+		systemPrompt, err := a.systemPrompt()
+		if err != nil {
+			return TurnResult{}, err
+		}
 		events, err := a.provider.Chat(
 			streamContext,
 			a.model,
-			prompt.BuildSystemPrompt(),
+			systemPrompt,
 			messages,
 			a.tools.Definitions(),
 		)
@@ -185,6 +212,22 @@ func (a *Agent) Turn(ctx context.Context, request string) (TurnResult, error) {
 			}
 		}
 	}
+}
+
+// systemPrompt assembles the per-Step system prompt, refreshing the
+// Repository Map so every Step sees the current repository structure.
+func (a *Agent) systemPrompt() (string, error) {
+	if a.repoMap == nil {
+		return prompt.BuildSystemPrompt(""), nil
+	}
+	if a.repoMapErr != nil {
+		return "", fmt.Errorf("build repository map: %w", a.repoMapErr)
+	}
+	repoMap, err := a.repoMap.Build()
+	if err != nil {
+		return "", fmt.Errorf("build repository map: %w", err)
+	}
+	return prompt.BuildSystemPrompt(repoMap), nil
 }
 
 // runTool gates a single Tool Call behind Approval and executes it, returning
