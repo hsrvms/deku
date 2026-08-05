@@ -6,6 +6,7 @@ import (
 	"errors"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestPolicyDefaults(t *testing.T) {
@@ -176,6 +177,22 @@ func TestGateHonorsCancellation(t *testing.T) {
 	}
 	if !errors.Is(err, context.Canceled) {
 		t.Errorf("error = %v, want wrapped context.Canceled", err)
+	}
+}
+
+func TestGateHandlesSequentialPromptsOnSharedReader(t *testing.T) {
+	var prompt bytes.Buffer
+	gate := NewGate(DefaultPolicy(), strings.NewReader("y\ny\n"), &prompt)
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	for i := 0; i < 2; i++ {
+		decision, err := gate.Decide(ctx, "edit", Write)
+		if err != nil {
+			t.Fatalf("prompt %d: Decide() error = %v", i+1, err)
+		}
+		if !decision.Approved {
+			t.Errorf("prompt %d: approved = false, want true", i+1)
+		}
 	}
 }
 

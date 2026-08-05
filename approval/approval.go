@@ -155,11 +155,14 @@ type Decider interface {
 	Decide(ctx context.Context, toolName string, declared Tier) (Decision, error)
 }
 
-// Gate is the built-in Decider that prompts the user in the terminal.
+// Gate is the built-in Decider that prompts the user in the terminal. It holds
+// one persistent line reader so buffered input is preserved across prompts and
+// no scanner is shared or leaked between Approval decisions.
 type Gate struct {
 	policy Policy
 	input  io.Reader
 	output io.Writer
+	br     *bufio.Reader
 }
 
 // NewGate constructs a Gate that prompts the user. A nil input defaults to
@@ -206,57 +209,99 @@ func (g *Gate) prompt(ctx context.Context, toolName string, tier Tier) (Decision
 		return Decision{}, fmt.Errorf("display approval prompt: %w", err)
 	}
 
-	lines := make(chan string)
-	errs := make(chan error)
-	go g.scanLines(ctx, lines, errs)
-
 	for {
-		select {
-		case line := <-lines:
-			switch strings.ToLower(strings.TrimSpace(line)) {
-			case "y", "yes":
-				return Decision{Tier: tier, Approved: true}, nil
-			case "n", "no":
-				return Decision{Tier: tier, Approved: false}, nil
-			default:
-				if _, err := io.WriteString(g.output, "Please answer y (approve) or n (reject): "); err != nil {
-					return Decision{}, fmt.Errorf("display approval prompt: %w", err)
-				}
-			}
-		case err, ok := <-errs:
-			if !ok {
-				return Decision{}, errors.New("approval input ended before a response")
-			}
+		line, err := g.readLine(ctx)
+		if err != nil {
 			return Decision{}, err
-		case <-ctx.Done():
-			return Decision{}, fmt.Errorf("approval: %w", ctx.Err())
+		}
+		switch strings.ToLower(line) {
+		case "y", "yes":
+			return Decision{Tier: tier, Approved: true}, nil
+		case "n", "no":
+			return Decision{Tier: tier, Approved: false}, nil
+		default:
+			if _, err := io.WriteString(g.output, "Please answer y (approve) or n (reject): "); err != nil {
+				return Decision{}, fmt.Errorf("display approval prompt: %w", err)
+			}
 		}
 	}
 }
 
-// scanLines forwards non-empty input lines until the reader ends or the
-// context is canceled.
-func (g *Gate) scanLines(ctx context.Context, lines chan<- string, errs chan<- error) {
-	scanner := bufio.NewScanner(g.input)
-	for scanner.Scan() {
-		line := strings.TrimSpace(scanner.Text())
-		if line == "" {
+// reader returns the Gate's persistent line reader, reusing a shared reader
+// when one was supplied so the caller and the Gate never double-buffer input.
+func (g *Gate) reader() *bufio.Reader {
+	if g.br == nil {
+		if shared, ok := g.input.(*bufio.Reader); ok {
+			g.br = shared
+		} else {
+			g.br = bufio.NewReader(g.input)
+		}
+	}
+	return g.br
+}
+
+// readLine reads the next non-empty line from the persistent reader, returning
+// when a line is available or the context is canceled. The read happens in a
+// short-lived goroutine that exits after one line, so a cancelled prompt never
+// leaves a reader permanently consuming input.
+func (g *Gate) readLine(ctx context.Context) (string, error) {
+	type result struct {
+		line string
+		err  error
+	}
+	ch := make(chan result, 1)
+	go func() {
+		line, err := firstNonEmptyLine(g.reader())
+		select {
+		case ch <- result{line: line, err: err}:
+		case <-ctx.Done():
+		}
+	}()
+	select {
+	case r := <-ch:
+		return r.line, r.err
+	case <-ctx.Done():
+		return "", ctx.Err()
+	}
+}
+
+// firstNonEmptyLine reads lines from br, skipping blank lines and returning the
+// first non-blank line. It reports a contextual error when the input ends
+// before a response is available.
+func firstNonEmptyLine(br *bufio.Reader) (string, error) {
+	for {
+		line, err := readline(br)
+		if err != nil {
+			if errors.Is(err, io.EOF) {
+				return "", errors.New("approval input ended before a response")
+			}
+			return "", fmt.Errorf("read approval response: %w", err)
+		}
+		line = strings.TrimSpace(line)
+		if line != "" {
+			return line, nil
+		}
+	}
+}
+
+// readline reads one line from br, accumulating fragments so lines longer than
+// the reader's buffer are returned whole.
+func readline(br *bufio.Reader) (string, error) {
+	var line strings.Builder
+	for {
+		fragment, err := br.ReadString('\n')
+		line.WriteString(fragment)
+		if err == nil {
+			return line.String(), nil
+		}
+		if errors.Is(err, bufio.ErrBufferFull) {
 			continue
 		}
-		select {
-		case lines <- line:
-		case <-ctx.Done():
-			return
+		if errors.Is(err, io.EOF) && line.Len() > 0 {
+			return line.String(), nil
 		}
+		return line.String(), err
 	}
-	if err := scanner.Err(); err != nil {
-		select {
-		case errs <- fmt.Errorf("read approval response: %w", err):
-		case <-ctx.Done():
-		}
-		return
-	}
-	close(errs)
 }
 
 // promptMessage renders the user-facing request for a gated tool call.
