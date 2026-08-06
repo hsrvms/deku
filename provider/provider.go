@@ -41,9 +41,6 @@ type ToolDefinition struct {
 	Function FunctionDefinition
 }
 
-// Tool is a concise alias for ToolDefinition.
-type Tool = ToolDefinition
-
 // FunctionDefinition describes a function tool and its JSON input schema.
 type FunctionDefinition struct {
 	Name        string
@@ -131,11 +128,6 @@ type OpenAICompatible struct {
 	Client   *http.Client
 }
 
-// OpenAIProvider and OpenAICompatibleProvider are alternate names for
-// OpenAICompatible.
-type OpenAIProvider = OpenAICompatible
-type OpenAICompatibleProvider = OpenAICompatible
-
 // NewOpenAICompatible creates an OpenAI-compatible provider. Endpoint should
 // identify the API root, such as https://api.openai.com/v1, or may already end
 // in /chat/completions. Client defaults to http.DefaultClient.
@@ -145,16 +137,6 @@ func NewOpenAICompatible(endpoint, apiKey string) *OpenAICompatible {
 		APIKey:   apiKey,
 		Client:   http.DefaultClient,
 	}
-}
-
-// NewOpenAIProvider and NewOpenAICompatibleProvider are alias constructors
-// for NewOpenAICompatible.
-func NewOpenAIProvider(endpoint, apiKey string) *OpenAICompatible {
-	return NewOpenAICompatible(endpoint, apiKey)
-}
-
-func NewOpenAICompatibleProvider(endpoint, apiKey string) *OpenAICompatible {
-	return NewOpenAICompatible(endpoint, apiKey)
 }
 
 var _ Chat = (*OpenAICompatible)(nil)
