@@ -5,6 +5,8 @@ package agent
 import (
 	"bufio"
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"io"
@@ -14,6 +16,7 @@ import (
 	"time"
 
 	"github.com/hsrvms/deku/approval"
+	"github.com/hsrvms/deku/lineio"
 	"github.com/hsrvms/deku/prompt"
 	"github.com/hsrvms/deku/provider"
 	"github.com/hsrvms/deku/repomap"
@@ -85,13 +88,6 @@ func New(p provider.Chat, model string, conversation *session.Session, output io
 // test and embedding seam for choosing the repository being explored.
 func NewWithTools(p provider.Chat, model string, conversation *session.Session, output io.Writer, input io.Reader, registry *tool.Registry) *Agent {
 	return newAgent(p, model, conversation, output, input, registry, approval.DefaultPolicy(), nil, nil, nil, nil, repository.ModeOff, "")
-}
-
-// NewWithApproval constructs an Agent with an explicit Tool registry and a
-// configured Approval policy. This is the production seam for wiring
-// per-tool and per-tier overrides from configuration.
-func NewWithApproval(p provider.Chat, model string, conversation *session.Session, output io.Writer, input io.Reader, registry *tool.Registry, policy approval.Policy) *Agent {
-	return newAgent(p, model, conversation, output, input, registry, policy, nil, nil, nil, nil, repository.ModeOff, "")
 }
 
 // NewWithPolicy constructs an Agent with an explicit Tool registry, a
@@ -546,9 +542,23 @@ func (a *Agent) chooseDirtyAction(ctx context.Context, state repository.State) (
 }
 
 // stashMessage returns a recognizable, unique message for a Deku-created stash
-// so the precise stash can be identified and restored later.
+// so the precise stash can be identified and restored later. A random suffix
+// guarantees two stashes created in the same second never collide, so the
+// stash is always findable by message and never mistaken for another.
 func stashMessage() string {
-	return "deku: pre-existing work stashed before agent turn " + time.Now().UTC().Format("20060102T150405Z")
+	token := randomToken()
+	return "deku: pre-existing work stashed before agent turn " + time.Now().UTC().Format("20060102T150405Z") + " " + token
+}
+
+// randomToken returns a short random hex token used to disambiguate stash
+// messages. It falls back to a nanosecond timestamp only if the entropy source
+// is unavailable, which is effectively never.
+func randomToken() string {
+	var suffix [6]byte
+	if _, err := rand.Read(suffix[:]); err != nil {
+		return fmt.Sprintf("%d", time.Now().UTC().UnixNano())
+	}
+	return hex.EncodeToString(suffix[:])
 }
 
 // finishTurn attributes working-tree changes, runs Validation, and creates an
@@ -660,7 +670,7 @@ func (a *Agent) readLine(ctx context.Context) (string, error) {
 	}
 	ch := make(chan result, 1)
 	go func() {
-		line, err := a.scanLine()
+		line, err := lineio.Scan(a.input)
 		select {
 		case ch <- result{line: line, err: err}:
 		case <-ctx.Done():
@@ -671,22 +681,5 @@ func (a *Agent) readLine(ctx context.Context) (string, error) {
 		return r.line, r.err
 	case <-ctx.Done():
 		return "", ctx.Err()
-	}
-}
-
-// scanLine reads the next non-empty line from the Agent's input reader.
-func (a *Agent) scanLine() (string, error) {
-	for {
-		line, err := a.input.ReadString('\n')
-		line = strings.TrimSpace(line)
-		if line != "" {
-			return line, nil
-		}
-		if err != nil {
-			if errors.Is(err, io.EOF) {
-				return "", errors.New("input ended before a response")
-			}
-			return "", err
-		}
 	}
 }

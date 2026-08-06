@@ -11,6 +11,8 @@ import (
 	"io"
 	"os"
 	"strings"
+
+	"github.com/hsrvms/deku/lineio"
 )
 
 // Tier classifies the side effects a tool may have.
@@ -251,7 +253,7 @@ func (g *Gate) readLine(ctx context.Context) (string, error) {
 	}
 	ch := make(chan result, 1)
 	go func() {
-		line, err := firstNonEmptyLine(g.reader())
+		line, err := lineio.Scan(g.reader())
 		select {
 		case ch <- result{line: line, err: err}:
 		case <-ctx.Done():
@@ -262,45 +264,6 @@ func (g *Gate) readLine(ctx context.Context) (string, error) {
 		return r.line, r.err
 	case <-ctx.Done():
 		return "", ctx.Err()
-	}
-}
-
-// firstNonEmptyLine reads lines from br, skipping blank lines and returning the
-// first non-blank line. It reports a contextual error when the input ends
-// before a response is available.
-func firstNonEmptyLine(br *bufio.Reader) (string, error) {
-	for {
-		line, err := readline(br)
-		if err != nil {
-			if errors.Is(err, io.EOF) {
-				return "", errors.New("approval input ended before a response")
-			}
-			return "", fmt.Errorf("read approval response: %w", err)
-		}
-		line = strings.TrimSpace(line)
-		if line != "" {
-			return line, nil
-		}
-	}
-}
-
-// readline reads one line from br, accumulating fragments so lines longer than
-// the reader's buffer are returned whole.
-func readline(br *bufio.Reader) (string, error) {
-	var line strings.Builder
-	for {
-		fragment, err := br.ReadString('\n')
-		line.WriteString(fragment)
-		if err == nil {
-			return line.String(), nil
-		}
-		if errors.Is(err, bufio.ErrBufferFull) {
-			continue
-		}
-		if errors.Is(err, io.EOF) && line.Len() > 0 {
-			return line.String(), nil
-		}
-		return line.String(), err
 	}
 }
 
