@@ -15,6 +15,7 @@ import (
 	"github.com/hsrvms/deku/approval"
 	"github.com/hsrvms/deku/config"
 	"github.com/hsrvms/deku/provider"
+	"github.com/hsrvms/deku/repository"
 	"github.com/hsrvms/deku/session"
 	"github.com/hsrvms/deku/tool"
 	"github.com/hsrvms/deku/version"
@@ -86,7 +87,24 @@ func run(args []string, input io.Reader, output, errorOutput io.Writer) int {
 		}
 		return 1
 	}
-	runner := agent.NewWithPolicy(model, cfg.Provider.Model, conversation, output, input, registry, policy, cfg.RepoMap.Exclude)
+	commitMode, err := repository.ParseMode(cfg.AgentCommits.Mode)
+	if err != nil {
+		if writeErr := writeError(errorOutput, "deku: %v\n", err); writeErr != nil {
+			return 1
+		}
+		return 1
+	}
+	var repo *repository.Repo
+	if commitMode != repository.ModeOff {
+		repo, err = repository.New(".")
+		if err != nil {
+			if writeErr := writeError(errorOutput, "deku: %v\n", err); writeErr != nil {
+				return 1
+			}
+			return 1
+		}
+	}
+	runner := agent.NewWithGit(model, cfg.Provider.Model, conversation, output, input, registry, policy, cfg.RepoMap.Exclude, repo, commitMode, cfg.AgentCommits.Validation)
 	return runConversation(runner, input, output, errorOutput)
 }
 
@@ -123,11 +141,15 @@ func runConversation(runner agent.Runner, input io.Reader, output, errorOutput i
 			continue
 		}
 
-		if _, err := runner.Turn(context.Background(), request); err != nil {
+		result, err := runner.Turn(context.Background(), request)
+		if err != nil {
 			if writeErr := writeError(errorOutput, "deku: %v\n", err); writeErr != nil {
 				return 1
 			}
 			continue
+		}
+		if err := reportGitResult(output, errorOutput, result); err != nil {
+			return 1
 		}
 		if _, err := io.WriteString(output, "\n"); err != nil {
 			if writeErr := writeError(errorOutput, "deku: display response separator: %v\n", err); writeErr != nil {
@@ -143,6 +165,34 @@ func runConversation(runner agent.Runner, input io.Reader, output, errorOutput i
 		return 1
 	}
 	return 0
+}
+
+// reportGitResult surfaces Validation outcomes and Git recoverability to the
+// user. A successful Validation is never presented as proof that the repository
+// is correct; a commit is a recoverable boundary, not a correctness guarantee.
+func reportGitResult(output, errorOutput io.Writer, result agent.TurnResult) error {
+	if result.StashRef != "" {
+		if _, err := io.WriteString(output, "deku: stashed pre-existing work at "+result.StashRef+"\n"); err != nil {
+			return err
+		}
+	}
+	if result.Validation != nil {
+		if result.Validation.Passed {
+			if _, err := io.WriteString(output, "deku: validation passed ("+result.Validation.Command+")\n"); err != nil {
+				return err
+			}
+		} else {
+			if _, err := io.WriteString(output, "deku: validation failed ("+result.Validation.Command+"); work remains uncommitted\n"); err != nil {
+				return err
+			}
+		}
+	}
+	if result.CommitID != "" {
+		if _, err := io.WriteString(output, "deku: agent commit created "+result.CommitID+"\n"); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func writeError(output io.Writer, format string, args ...any) error {

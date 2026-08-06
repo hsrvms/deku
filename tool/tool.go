@@ -15,6 +15,7 @@ import (
 	"regexp"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/hsrvms/deku/approval"
@@ -33,8 +34,10 @@ type Tool interface {
 // Registry owns the tools available to one Agent and confines them to a
 // repository root.
 type Registry struct {
-	root  string
-	tools map[string]Tool
+	root      string
+	tools     map[string]Tool
+	touched   map[string]bool
+	touchedMu sync.Mutex
 }
 
 // NewRegistry creates the read-only filesystem tool registry rooted at root.
@@ -59,7 +62,12 @@ func NewRegistry(root string) (*Registry, error) {
 		return nil, fmt.Errorf("tool repository root %q is not a directory", root)
 	}
 
-	filesystem := &filesystem{root: absoluteRoot}
+	registry := &Registry{
+		root:    absoluteRoot,
+		tools:   make(map[string]Tool),
+		touched: make(map[string]bool),
+	}
+	filesystem := &filesystem{root: absoluteRoot, touch: registry.recordTouch}
 	tools := []Tool{
 		&commandTool{filesystem: filesystem},
 		&editTool{filesystem: filesystem},
@@ -67,10 +75,6 @@ func NewRegistry(root string) (*Registry, error) {
 		&lsTool{filesystem: filesystem},
 		&readTool{filesystem: filesystem},
 		&writeTool{filesystem: filesystem},
-	}
-	registry := &Registry{
-		root:  absoluteRoot,
-		tools: make(map[string]Tool, len(tools)),
 	}
 	for _, tool := range tools {
 		name := tool.Definition().Function.Name
@@ -104,6 +108,45 @@ func (r *Registry) Definitions() []provider.ToolDefinition {
 	return definitions
 }
 
+// Touched returns the repository-relative paths the Agent's mutating tools
+// wrote to during the current Turn, in stable order. The Agent uses this set
+// to attribute working-tree changes to its own work.
+func (r *Registry) Touched() []string {
+	if r == nil {
+		return nil
+	}
+	r.touchedMu.Lock()
+	defer r.touchedMu.Unlock()
+	paths := make([]string, 0, len(r.touched))
+	for path := range r.touched {
+		paths = append(paths, path)
+	}
+	sort.Strings(paths)
+	return paths
+}
+
+// ResetTouched clears the record of Agent-touched paths at the start of each
+// Turn so attribution is scoped to one Turn.
+func (r *Registry) ResetTouched() {
+	if r == nil {
+		return
+	}
+	r.touchedMu.Lock()
+	r.touched = make(map[string]bool)
+	r.touchedMu.Unlock()
+}
+
+// recordTouch marks path as modified by the Agent during this Turn.
+func (r *Registry) recordTouch(path string) {
+	if r == nil {
+		return
+	}
+	clean := filepath.ToSlash(filepath.Clean(path))
+	r.touchedMu.Lock()
+	r.touched[clean] = true
+	r.touchedMu.Unlock()
+}
+
 // Tier returns the classification the named tool declares. The Agent uses it
 // to decide whether Approval is required before execution.
 func (r *Registry) Tier(name string) (approval.Tier, error) {
@@ -134,7 +177,8 @@ func (r *Registry) Execute(ctx context.Context, name string, arguments string) (
 }
 
 type filesystem struct {
-	root string
+	root  string
+	touch func(path string)
 }
 
 func (f *filesystem) resolve(ctx context.Context, path string, allowRoot bool) (string, error) {
@@ -438,6 +482,9 @@ func (t *writeTool) Execute(ctx context.Context, raw json.RawMessage) (string, e
 	if err := writeFileAtomic(path, []byte(arguments.Content), perm); err != nil {
 		return "", fmt.Errorf("write %q: %w", arguments.Path, err)
 	}
+	if t.filesystem.touch != nil {
+		t.filesystem.touch(arguments.Path)
+	}
 	return fmt.Sprintf("Wrote %s.", arguments.Path), nil
 }
 
@@ -511,6 +558,9 @@ func (t *editTool) Execute(ctx context.Context, raw json.RawMessage) (string, er
 	}
 	if err := writeFileAtomic(path, updated, info.Mode().Perm()); err != nil {
 		return "", fmt.Errorf("edit %q: %w", arguments.Path, err)
+	}
+	if t.filesystem.touch != nil {
+		t.filesystem.touch(arguments.Path)
 	}
 	return fmt.Sprintf("Applied %d replacement(s) to %s.", len(arguments.Edits), arguments.Path), nil
 }

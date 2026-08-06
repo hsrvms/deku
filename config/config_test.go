@@ -233,3 +233,68 @@ func TestLoadNoConfigFileIsOk(t *testing.T) {
 		t.Errorf("endpoint = %q, want %q", cfg.Provider.Endpoint, "https://api.example.com/v1")
 	}
 }
+
+func TestAgentCommitsDefaults(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("DEKU_PROVIDER_ENDPOINT", "https://api.example.com/v1")
+	t.Setenv("DEKU_PROVIDER_API_KEY", "sk-test-key")
+	t.Setenv("DEKU_PROVIDER_MODEL", "test-model")
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	if cfg.AgentCommits.Mode != "off" {
+		t.Errorf("agent_commits.mode = %q, want off default", cfg.AgentCommits.Mode)
+	}
+	if cfg.AgentCommits.Validation != "go test ./..." {
+		t.Errorf("agent_commits.validation = %q, want go test ./...", cfg.AgentCommits.Validation)
+	}
+}
+
+func TestAgentCommitsFromConfigFileAndEnv(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("DEKU_PROVIDER_ENDPOINT", "https://api.example.com/v1")
+	t.Setenv("DEKU_PROVIDER_API_KEY", "sk-test-key")
+	t.Setenv("DEKU_PROVIDER_MODEL", "test-model")
+
+	dekuDir := filepath.Join(home, ".deku")
+	if err := os.MkdirAll(dekuDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	yaml := `
+provider:
+  endpoint: "https://api.file.com/v1"
+  api_key: "sk-file-key"
+  model: "file-model"
+agent_commits:
+  mode: "ask"
+  validation: "make test"
+`
+	if err := os.WriteFile(filepath.Join(dekuDir, "config.yaml"), []byte(yaml), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	if cfg.AgentCommits.Mode != "ask" {
+		t.Errorf("agent_commits.mode = %q, want ask from file", cfg.AgentCommits.Mode)
+	}
+	if cfg.AgentCommits.Validation != "make test" {
+		t.Errorf("agent_commits.validation = %q, want make test from file", cfg.AgentCommits.Validation)
+	}
+
+	// Environment variable overrides the file mode.
+	t.Setenv("DEKU_AGENT_COMMITS", "on")
+	cfg, err = Load()
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	if cfg.AgentCommits.Mode != "on" {
+		t.Errorf("agent_commits.mode = %q, want on from env override", cfg.AgentCommits.Mode)
+	}
+}

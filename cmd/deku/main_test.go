@@ -4,12 +4,48 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+
+	"github.com/hsrvms/deku/agent"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"strings"
 	"testing"
 )
+
+func TestReportGitResult(t *testing.T) {
+	var output, errorOutput bytes.Buffer
+	if err := reportGitResult(&output, &errorOutput, agent.TurnResult{
+		StashRef:   "stash@{0}",
+		Validation: &agent.ValidationResult{Command: "go test ./...", Passed: true},
+		CommitID:   "deadbeef",
+	}); err != nil {
+		t.Fatalf("reportGitResult() error = %v", err)
+	}
+	got := output.String()
+	if !strings.Contains(got, "stash@{0}") {
+		t.Errorf("output = %q, want stash reference reported", got)
+	}
+	if !strings.Contains(got, "validation passed") {
+		t.Errorf("output = %q, want validation passed reported", got)
+	}
+	if !strings.Contains(got, "agent commit created deadbeef") {
+		t.Errorf("output = %q, want agent commit reported", got)
+	}
+
+	output.Reset()
+	if err := reportGitResult(&output, &errorOutput, agent.TurnResult{
+		Validation: &agent.ValidationResult{Command: "make check", Passed: false},
+	}); err != nil {
+		t.Fatalf("reportGitResult() error = %v", err)
+	}
+	if !strings.Contains(output.String(), "validation failed") {
+		t.Errorf("failing output = %q, want validation failed reported", output.String())
+	}
+	if strings.Contains(output.String(), "agent commit") {
+		t.Errorf("failing output = %q, must not report a commit", output.String())
+	}
+}
 
 func TestRunPrintsVersionWithoutProviderConfiguration(t *testing.T) {
 	home := t.TempDir()
