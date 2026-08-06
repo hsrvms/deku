@@ -1,0 +1,53 @@
+# v0.1 Development Plan — config, providers, approval transparency, activity seam
+
+**Status:** proposed
+**Spec:** `2026-08-06-v0-1-config-providers-approval.md`
+**ADRs:** 0007, 0008, 0009, 0010 (seam)
+
+The plan sequences four interdependent phases. Each phase is red-to-green at an agreed seam, lands behind the existing Agent-seam test convention, and updates the relevant documentation before it is considered done.
+
+## Phase 1 — Config foundation (ADR 0007)
+
+Replace the YAML loader with JSON configuration and the precedence model.
+
+- **Scope:** JSON files under Deku Home; optional Project Config; Config Precedence (`defaults < global < project < environment-as-source`); Env Substitution (`${VAR}` / `${VAR:-default}`); replace-per-section merge; Project Trust gate; Deku Home `.env` loading with real env winning.
+- **Seam:** `config.Load` with controlled Deku Home and environment. Table-driven cases for precedence, substitution, missing-placeholder errors, section replacement, and the Trust gate.
+- **Done when:** the loader produces a `Config` with no Provider wiring yet; existing tests ported; docs (`README`, config reference) updated; spec user stories 1–10 pass.
+
+## Phase 2 — Provider registry and Selection (ADR 0008)
+
+Introduce the Adapter/Provider split and runtime selection.
+
+- **Scope:** Adapter (unchanged `Chat` interface) vs ProviderRegistry; a factory that builds the correct Adapter from a Provider entry; Authentication resolved by Provider name; `defaultProvider`/`defaultModel`; a per-Session Selection override; `/model` command dispatch in the CLI (command-first; the palette shortcut is v1).
+- **Seam:** Agent module for end-to-end Selection; provider registry factory for adapter construction. Custom (URL+key) Providers only — native subscriptions are out of scope.
+- **Done when:** multiple custom Providers configure and run; `/model` switches the active Provider+Model between Turns and persists on resume; errors surface for missing/blank Selection; spec user stories 11–18 pass.
+
+## Phase 3 — Approval transparency (ADR 0009)
+
+Make gated actions visible before execution.
+
+- **Scope:** `Decider` seam carries a **Command Report**; the Gate renders it in the prompt; each built-in Tool produces Report text (exact command, Edit changes, Write path); Tool output echoed to the terminal regardless of tier; a call whose Report cannot be rendered is refused.
+- **Seam:** approval `Gate` with in-memory reader/writer; Agent seam for end-to-end Transparency and Session recording of denials.
+- **Done when:** a gated command/Edit/Write shows its concrete action before the y/n prompt; tool output is visible; spec user stories 19–22 pass.
+
+## Phase 4 — Activity seam (ADR 0010, seam only)
+
+Establish the Agent-to-display activity stream for the future TUI.
+
+- **Scope:** the Agent emits Working Indicator transitions (thinking / working / awaiting Approval) and change events (Edit/Write) to an activity sink interface. No renderer in scope — the CLI remains line-based; the v1 TUI renders these.
+- **Seam:** Agent module — a fake activity sink observes the emitted stream across a complete Turn.
+- **Done when:** a commented-through Turn produces a deterministic indicator+change sequence; spec user stories 23–25 pass.
+
+## Cross-cutting discipline
+
+- **Deepen, don't scatter:** each phase keeps the Agent as the sole Turn orchestrator; the CLI stays a thin renderer. No new shallow orchestration paths.
+- **Seam count:** one primary seam (Agent) plus focused seams for config, approval, and the registry factory. Prefer existing seams; add none beyond what the ADRs justify.
+- **Docs with code:** each phase updates the relevant ADR-referenced behavior in `docs/specs/`, `CONTEXT.md` (if a term sharpens), `README.md`, and the config/provider reference before claiming completeness.
+- **Exit checks per phase:** `gofmt`, `go vet ./...`, static analysis configured by the repo, and `go test ./...` pass; broken or skipped checks are reported, never hidden.
+
+## Risks
+
+- **Breaking config change (Phase 1):** no auto-migration from YAML; documented as intentional.
+- **Decider seam change (Phase 3):** touches Approval, Agent, and every Tool definition together; implemented as one slice per the ADR, not incrementally.
+- **Selection persistence (Phase 2):** the per-Session override must survive `--resume`, so it is recorded in the Session, not only in memory.
+- **Project Trust (Phase 1):** the safety-critical gate; must be exercised at the seam and never default to trusting an untrusted repository.

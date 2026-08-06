@@ -74,15 +74,41 @@ Extensions are **discovered** by scanning the filesystem and **enabled** by list
 
 ---
 
-## Provider
+## Adapter
 
-An adapter that translates the Agent's request into a specific model API's wire format. The Provider interface is:
+A wire-format translator that converts the Agent's request and the Model's response into a specific model API's protocol. The Adapter interface is:
 
 ```
 Chat(ctx, model, system, messages, tools) → stream of events
 ```
 
-Deku's initial Provider is **OpenAI-compatible**. Anthropic is a planned additional Provider. The Agent loop is provider-agnostic — it only depends on the interface, not on any specific wire protocol.
+Deku's supported Adapter families are **OpenAI-compatible** and (planned) **Anthropic Messages**. The Agent loop is adapter-agnostic — it depends only on the interface, never on a specific wire protocol. An Adapter is constructed from a Provider's configuration; it is not itself the Provider.
+
+---
+
+## Provider
+
+A named, configured model account the Agent can run against. A Provider declares an Adapter family, an optional base URL, its Authentication, and the Model Registry it exposes. Examples include tokenrouter, openrouter, claude, and codex. Subscription-based providers (claude, codex) authenticate with OAuth; custom providers (tokenrouter, openrouter, qwencloud) authenticate with a static API key.
+
+The Provider is the selection unit: the Agent runs against one Provider and one Model at a time. The Provider is not the wire-format translator (that is the Adapter) and is not the intelligence (that is the Model).
+
+---
+
+## Authentication
+
+The credential that lets a Provider be used. Authentication is typed: an **API key** (a static secret, often resolved from the environment) or **OAuth** (a token minted by a login flow that may expire and refresh). Each Provider has exactly one Authentication, stored separately from the Provider's Model Registry so secrets never travel with shared configuration.
+
+---
+
+## Model Registry
+
+The set of Models a Provider exposes, declared per Provider. The Registry is what the Agent offers to the user when selecting a Model. A Model is addressed by name through its Provider.
+
+---
+
+## Selection
+
+The choice of which Provider and Model the Agent uses for a Turn. Selection has a default (`defaultProvider` and `defaultModel`) and a per-Session override set by the `/model` command. The override applies to subsequent Turns and is restored when the Session resumes; the default applies otherwise.
 
 ---
 
@@ -100,7 +126,13 @@ A safety gate that pauses the Agent loop before executing a tool and asks the us
 - **Write** — prompts the user. Editing files, creating files, git commit.
 - **Destructive** — prompts the user with a warning. Deletion, force-push, commands with side effects.
 
-Each tool declares its tier. The user can override per-tool or per-tier in `config.yaml`. Approval is synchronous — it blocks the Agent loop until the user responds.
+Each tool declares its tier. The user can override per-tool or per-tier in configuration. Approval is synchronous — it blocks the Agent loop until the user responds.
+
+---
+
+## Command Report
+
+The user-facing description of what a gated Tool Call will do, shown at the point of Approval. A Command Report states the concrete action — the exact command, the specific Edit, or the Write to a named path — rather than just the Tool's name and tier, so the user approves an action, not a label. Because Approval gates on the Report, the user sees what will execute before it runs.
 
 ---
 
@@ -162,6 +194,18 @@ A Git commit containing only changes attributed to the Agent during one successf
 A single unit of output from a Provider during a model call. Events are typed: `TextDelta` (a fragment of model text), `ToolCall` (a complete tool invocation), `ToolCallDelta` (a fragment of a tool call being streamed), `Done` (end of response), `Error` (failure).
 
 The Agent dispatches events to the display or to the tool execution buffer based on their type.
+
+---
+
+## Working Indicator
+
+The visible state Deku shows while a Turn is in progress, so the user can tell what the Agent is doing. It distinguishes thinking (the Model has been called but produced nothing yet), working (a Tool is executing), and awaiting Approval (the loop is paused for a user decision). The indicator is driven by the Agent, the only module that knows the current Turn state.
+
+---
+
+## Turn Diff
+
+The file changes a Turn introduces, surfaced to the user as they happen rather than only at the end. A Turn Diff lets the user see the working-tree effect of the Agent's Edits and Writes live. It is distinct from the Repository Map (orientation) and from Validation (assessment); it is a display of Agent work, not a correctness claim.
 
 ---
 
@@ -252,3 +296,33 @@ The removal of a published Release or Release Artifact from recommended or avail
 ## Revocation
 
 A security declaration that a Release or Release Artifact must no longer be trusted. Revocation is stronger and more specific than ordinary Withdrawal because it communicates a loss of trust, not merely a distribution or maintenance decision.
+
+---
+
+## Deku Home
+
+The single per-user directory that owns all of Deku's durable state and configuration, including the Session archive, the Authentication store, and the Provider Registry's non-secret configuration. Deku uses one Home directory rather than splitting configuration and data across platform-specific paths.
+
+---
+
+## Project Config
+
+Configuration that lives inside a Repository and overrides the Deku Home configuration for that project. Project Config is loaded only after the user grants the project Trust. It is where a project agrees on shared behavior such as Approval policy and Repository Map exclusions.
+
+---
+
+## Config Precedence
+
+The order in which configuration sources combine: built-in defaults, then the Deku Home global configuration, then Project Config, with values resolved from the environment winning over all of them. Each configuration section is replaced as a whole by the next higher-precedence source rather than merged field-by-field.
+
+---
+
+## Project Trust
+
+The user's decision to load a Repository's Project Config and any project-local resources. Project Config is not loaded until the project is trusted, because it can change safety behavior such as Approval policy. Untrusted projects are ignored.
+
+---
+
+## Env Substitution
+
+The rule that a configuration value may reference the environment instead of holding a literal. A value of the form `${VAR}` is replaced with the value of the environment variable VAR; `${VAR:-default}` supplies a fallback when VAR is unset. A literal value always wins over a placeholder. The environment is a source of configuration values, not a separate precedence layer.
