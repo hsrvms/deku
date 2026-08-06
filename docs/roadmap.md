@@ -18,6 +18,9 @@ Candidate scope, pending its own specification:
 - An Anthropic Provider adapter.
 - Tree-sitter Repository Maps and relevance ranking.
 - Purpose-specific command experiences such as review, explain, and commit.
+- A terminal UI: the Working Indicator and live Turn Diff rendered as panes, component conventions, keybinding policy (including the `/model` palette shortcut), and a color and accessibility baseline. Its design guide precedes implementation.
+
+The near-term display surface is deliberately limited to the Agent-to-display activity seam plus Approval transparency: a Working Indicator and Turn Diff render as the TUI in v1 rather than as a throwaway inline layer.
 
 ## Later horizon
 
@@ -26,7 +29,6 @@ The following ideas remain intentionally unscheduled until concrete use cases ju
 - Context Window summarization.
 - Repository Memory.
 - Agent-authored Extensions and their review or distribution workflow.
-- TUI design guide: component conventions, keybinding policies, color and accessibility baseline.
 
 ## Documentation commitment
 
