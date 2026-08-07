@@ -1,5 +1,7 @@
 // Package provider defines the adapter interface for translating Agent requests
-// into model API wire formats and normalizing streaming responses into Events.
+// into model API wire formats and normalizing streaming responses into Events,
+// and the Provider Registry that builds the correct Adapter for named Provider
+// entries.
 package provider
 
 import (

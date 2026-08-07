@@ -58,63 +58,89 @@ Configure Deku with JSON files under the **Deku Home** directory
 (`~/.deku/`). Configuration is split by risk into three optional modules — a
 missing module is simply absent:
 
-- `settings.json` — behavior: Approval overrides, Repository Map exclusions, Agent Commits.
-- `auth.json` — credentials: the Provider API key.
-- `models.json` — the non-secret Provider declaration: endpoint and model.
+- `settings.json` — behavior: the default Selection, Approval overrides, Repository Map exclusions, Agent Commits.
+- `auth.json` — credentials: named Authentication entries, kept apart from the Provider declaration so secrets never travel with shared configuration.
+- `models.json` — the Provider Registry: named Providers, each declaring an Adapter family, a base URL, its Authentication by name, and the Models it exposes.
 
 ```sh
 mkdir -p ~/.deku && cat > ~/.deku/models.json <<'EOF'
 {
-  "endpoint": "https://api.openai.com/v1",
-  "model": "gpt-4"
+  "providers": {
+    "openai": {
+      "adapter": "openai-compatible",
+      "base_url": "https://api.openai.com/v1",
+      "auth": "openai",
+      "models": ["gpt-4"]
+    }
+  }
 }
 EOF
 cat > ~/.deku/auth.json <<'EOF'
 {
-  "api_key": "your-api-key"
+  "openai": { "type": "api_key", "api_key": "your-api-key" }
+}
+EOF
+cat > ~/.deku/settings.json <<'EOF'
+{
+  "defaultProvider": "openai",
+  "defaultModel": "gpt-4"
 }
 EOF
 ```
+
+Deku refuses to start when the Provider Registry is inconsistent — a Provider
+that references an unknown Authentication, declares an unsupported Adapter
+family, or omits its base URL or Models fails fast with an explicit error —
+and when no Provider and Model are selected.
 
 Secrets and endpoints can also live in a Deku Home `.env` file, auto-loaded at
 startup:
 
 ```sh
 cat > ~/.deku/.env <<'EOF'
-DEKU_PROVIDER_ENDPOINT=https://api.openai.com/v1
-DEKU_PROVIDER_API_KEY=your-api-key
-DEKU_PROVIDER_MODEL=gpt-4
+OPENAI_API_KEY=your-api-key
 EOF
 ```
 
-Configuration is resolved in Config Precedence order — built-in **defaults**, then the Deku Home **modules**, then the **Project Config** of the Repository you run Deku from, then the environment as the highest source: real process environment variables win over the `.env` file, which wins over the module files. Every value in a module file may reference the environment with Env Substitution: `${VAR}` resolves the variable (from the process environment or the `.env` file), and `${VAR:-default}` falls back when it is unset or empty. A literal value overrides an environment placeholder, and a missing required value fails fast at startup:
+Configuration is resolved in Config Precedence order — built-in **defaults**, then the Deku Home **modules**, then the **Project Config** of the Repository you run Deku from, then the environment as the highest source: real process environment variables win over the `.env` file, which wins over the module files. Every value in a module file may reference the environment with Env Substitution: `${VAR}` resolves the variable (from the process environment or the `.env` file), and `${VAR:-default}` falls back when it is unset or empty:
 
 ```json
 {
-  "endpoint": "${DEKU_PROVIDER_ENDPOINT:-https://api.openai.com/v1}",
-  "model": "${DEKU_PROVIDER_MODEL:-gpt-4}"
+  "openai": { "type": "api_key", "api_key": "${OPENAI_API_KEY}" }
 }
 ```
 
-```json
-{
-  "api_key": "${OPENAI_API_KEY}"
-}
+An Authentication whose key does not resolve leaves its Provider declared but
+unable to authenticate: it is excluded from Selection, and Deku reports
+explicitly when the selected Provider cannot authenticate.
+
+### Provider selection
+
+The active Provider and Model are a **Selection**: `defaultProvider` and
+`defaultModel` from `settings.json`, overridden per Session by the `/model`
+command. During a chat:
+
+```
+deku> /model
+current selection: openai / gpt-4
+openai: gpt-4, gpt-4o
+deku> /model openai gpt-4o
+selection: openai / gpt-4o
 ```
 
-The provider endpoint, API key, and model are required; Deku refuses to start
-when any is missing. They can also be supplied directly to the environment as
-`DEKU_PROVIDER_ENDPOINT`, `DEKU_PROVIDER_API_KEY`, and `DEKU_PROVIDER_MODEL`,
-which take precedence over the `.env` file and the module files.
+`/model` with no arguments lists the current Selection and every Provider the
+Agent can authenticate to with its Models; `/model <provider> <model>`
+switches the active Selection for subsequent Turns and records the override in
+the Session, so it is restored when the Session resumes.
 
 ### Project Config and Project Trust
 
 A Repository may carry project-scope configuration in the same three optional
 modules under a `.deku/` directory at the repository top level:
 
-- `.deku/settings.json` — behavior: Approval overrides, Repository Map exclusions, Agent Commits.
-- `.deku/auth.json` — credentials: the Provider API key.
-- `.deku/models.json` — the non-secret Provider declaration: endpoint and model.
+- `.deku/settings.json` — behavior: the default Selection, Approval overrides, Repository Map exclusions, Agent Commits.
+- `.deku/auth.json` — credentials: named Authentication entries.
+- `.deku/models.json` — the Provider Registry: named Providers with their Adapter family, base URL, Authentication reference, and Models.
 
 Project Config is loaded **only after you grant the project Trust**. When you
 run Deku interactively in a repository that carries Project Config, Deku asks

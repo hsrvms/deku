@@ -7,6 +7,8 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+
+	"github.com/hsrvms/deku/provider"
 )
 
 // writeDekuHome writes Deku Home files (settings.json, auth.json,
@@ -47,298 +49,46 @@ func writeEnv(t *testing.T, body string) {
 	writeDekuHome(t, map[string]string{".env": body})
 }
 
-func TestLoadValidatesRequiredFields(t *testing.T) {
-	home := t.TempDir()
-	t.Setenv("HOME", home)
-	_ = os.Unsetenv("DEKU_PROVIDER_ENDPOINT")
-	_ = os.Unsetenv("DEKU_PROVIDER_API_KEY")
-	_ = os.Unsetenv("DEKU_PROVIDER_MODEL")
-
-	cfg, err := Load("")
-	if err == nil {
-		t.Fatalf("expected error for missing config, got nil")
-	}
-	if cfg != nil {
-		t.Errorf("expected nil config on error, got %+v", cfg)
-	}
-}
-
-func TestLoadRequiredFailureNamesTheField(t *testing.T) {
-	home := t.TempDir()
-	t.Setenv("HOME", home)
-	t.Setenv("DEKU_PROVIDER_ENDPOINT", "https://api.example.com/v1")
-	t.Setenv("DEKU_PROVIDER_API_KEY", "sk-test-key")
-	_ = os.Unsetenv("DEKU_PROVIDER_MODEL")
-
-	_, err := Load("")
-	if err == nil {
-		t.Fatal("expected error for missing model")
-	}
-	if !strings.Contains(err.Error(), "provider model is required") {
-		t.Errorf("error = %q, want it to name the missing field", err)
-	}
-}
-
-func TestLoadFromEnvVars(t *testing.T) {
-	home := t.TempDir()
-	t.Setenv("HOME", home)
-	t.Setenv("DEKU_PROVIDER_ENDPOINT", "https://api.example.com/v1")
-	t.Setenv("DEKU_PROVIDER_API_KEY", "sk-test-key")
-	t.Setenv("DEKU_PROVIDER_MODEL", "test-model")
-
-	cfg, err := Load("")
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if cfg.Provider.Endpoint != "https://api.example.com/v1" {
-		t.Errorf("endpoint = %q, want %q", cfg.Provider.Endpoint, "https://api.example.com/v1")
-	}
-	if cfg.Provider.APIKey != "sk-test-key" {
-		t.Errorf("api_key = %q, want %q", cfg.Provider.APIKey, "sk-test-key")
-	}
-	if cfg.Provider.Model != "test-model" {
-		t.Errorf("model = %q, want %q", cfg.Provider.Model, "test-model")
-	}
-}
-
-func TestLoadFromModuleFiles(t *testing.T) {
-	writeModules(t,
-		``,
-		`{ "api_key": "sk-file-key" }`,
-		`{
-  "endpoint": "https://api.file.com/v1",
-  "model": "file-model"
-}`)
-
-	cfg, err := Load("")
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if cfg.Provider.Endpoint != "https://api.file.com/v1" {
-		t.Errorf("endpoint = %q, want %q", cfg.Provider.Endpoint, "https://api.file.com/v1")
-	}
-	if cfg.Provider.APIKey != "sk-file-key" {
-		t.Errorf("api_key = %q, want %q", cfg.Provider.APIKey, "sk-file-key")
-	}
-	if cfg.Provider.Model != "file-model" {
-		t.Errorf("model = %q, want %q", cfg.Provider.Model, "file-model")
-	}
-}
-
-func TestEnvVarsOverrideModuleFiles(t *testing.T) {
-	writeModules(t,
-		``,
-		`{ "api_key": "sk-file-key" }`,
-		`{
-  "endpoint": "https://api.file.com/v1",
-  "model": "file-model"
-}`)
-	t.Setenv("DEKU_PROVIDER_ENDPOINT", "https://api.env.com/v1")
-
-	cfg, err := Load("")
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	// Env var should win over the files.
-	if cfg.Provider.Endpoint != "https://api.env.com/v1" {
-		t.Errorf("endpoint = %q, want env override %q", cfg.Provider.Endpoint, "https://api.env.com/v1")
-	}
-	// File values should fill in unset env vars.
-	if cfg.Provider.APIKey != "sk-file-key" {
-		t.Errorf("api_key = %q, want file fallback %q", cfg.Provider.APIKey, "sk-file-key")
-	}
-}
-
-func TestLoadMissingProviderEndpoint(t *testing.T) {
-	home := t.TempDir()
-	t.Setenv("HOME", home)
-	t.Setenv("DEKU_PROVIDER_API_KEY", "sk-test-key")
-	t.Setenv("DEKU_PROVIDER_MODEL", "test-model")
-	_ = os.Unsetenv("DEKU_PROVIDER_ENDPOINT")
-
-	_, err := Load("")
-	if err == nil {
-		t.Fatal("expected error for missing endpoint")
-	}
-}
-
-func TestLoadMissingAPIKey(t *testing.T) {
-	home := t.TempDir()
-	t.Setenv("HOME", home)
-	t.Setenv("DEKU_PROVIDER_ENDPOINT", "https://api.example.com/v1")
-	t.Setenv("DEKU_PROVIDER_MODEL", "test-model")
-	_ = os.Unsetenv("DEKU_PROVIDER_API_KEY")
-
-	_, err := Load("")
-	if err == nil {
-		t.Fatal("expected error for missing api key")
-	}
-}
-
-func TestLoadMissingModel(t *testing.T) {
-	home := t.TempDir()
-	t.Setenv("HOME", home)
-	t.Setenv("DEKU_PROVIDER_ENDPOINT", "https://api.example.com/v1")
-	t.Setenv("DEKU_PROVIDER_API_KEY", "sk-test-key")
-	_ = os.Unsetenv("DEKU_PROVIDER_MODEL")
-
-	_, err := Load("")
-	if err == nil {
-		t.Fatal("expected error for missing model")
-	}
-}
-
-func TestLoadRequiredErrorNamesTheModuleFile(t *testing.T) {
-	// endpoint and model come from models.json; the missing api_key error
-	// must point at auth.json, not at a generic config file.
-	writeModules(t,
-		``,
-		``,
-		`{
-  "endpoint": "https://api.file.com/v1",
-  "model": "file-model"
-}`)
-	_ = os.Unsetenv("DEKU_PROVIDER_API_KEY")
-
-	_, err := Load("")
-	if err == nil {
-		t.Fatal("expected error for missing api key")
-	}
-	if !strings.Contains(err.Error(), "auth.json") {
-		t.Errorf("error = %q, want it to name auth.json", err)
-	}
-
-	// A missing endpoint must point at models.json.
-	writeModules(t, ``, `{ "api_key": "sk-file-key" }`, `{ "model": "file-model" }`)
-	_ = os.Unsetenv("DEKU_PROVIDER_ENDPOINT")
-	_, err = Load("")
-	if err == nil {
-		t.Fatal("expected error for missing endpoint")
-	}
-	if !strings.Contains(err.Error(), "models.json") {
-		t.Errorf("error = %q, want it to name models.json", err)
-	}
-}
-
-func TestLoadApprovalOverridesFromSettings(t *testing.T) {
-	writeModules(t,
-		`{
-  "approval": {
-    "tools": { "edit": "destructive" },
-    "defaults": { "read": "prompt", "write": "auto" }
+// standardModels is a models module declaring two named Providers, used by
+// tests that need a populated Provider Registry.
+const standardModels = `{
+  "providers": {
+    "first": {
+      "adapter": "openai-compatible",
+      "base_url": "https://api.first.example.com/v1",
+      "auth": "first-auth",
+      "models": ["model-a", "model-b"]
+    },
+    "second": {
+      "adapter": "openai-compatible",
+      "base_url": "https://api.second.example.com/v1",
+      "auth": "second-auth",
+      "models": ["model-c"]
+    }
   }
-}`,
-		`{ "api_key": "sk-file-key" }`,
-		`{
-  "endpoint": "https://api.file.com/v1",
-  "model": "file-model"
-}`)
+}`
 
-	cfg, err := Load("")
-	if err != nil {
-		t.Fatalf("Load() error = %v", err)
-	}
-	if got := cfg.Approval.Tools["edit"]; got != "destructive" {
-		t.Errorf("approval.tools.edit = %q, want destructive", got)
-	}
-	if got := cfg.Approval.Defaults["read"]; got != "prompt" {
-		t.Errorf("approval.defaults.read = %q, want prompt", got)
-	}
-	if got := cfg.Approval.Defaults["write"]; got != "auto" {
-		t.Errorf("approval.defaults.write = %q, want auto", got)
-	}
-}
+// standardAuth is an auth module declaring credentials for standardModels.
+const standardAuth = `{
+  "first-auth": { "type": "api_key", "api_key": "sk-first" },
+  "second-auth": { "type": "api_key", "api_key": "sk-second" }
+}`
 
-func TestLoadRepoMapExcludeFromSettings(t *testing.T) {
-	writeModules(t,
-		`{
-  "repo_map": {
-    "exclude": ["vendor", "*.gen.go"]
-  }
-}`,
-		`{ "api_key": "sk-file-key" }`,
-		`{
-  "endpoint": "https://api.file.com/v1",
-  "model": "file-model"
-}`)
-
-	cfg, err := Load("")
-	if err != nil {
-		t.Fatalf("Load() error = %v", err)
-	}
-	if got := cfg.RepoMap.Exclude; !reflect.DeepEqual(got, []string{"vendor", "*.gen.go"}) {
-		t.Errorf("repo_map.exclude = %#v, want [vendor *.gen.go]", got)
-	}
-}
-
-func TestLoadNoConfigFileIsOk(t *testing.T) {
-	home := t.TempDir()
-	t.Setenv("HOME", home)
-	t.Setenv("DEKU_PROVIDER_ENDPOINT", "https://api.example.com/v1")
-	t.Setenv("DEKU_PROVIDER_API_KEY", "sk-test-key")
-	t.Setenv("DEKU_PROVIDER_MODEL", "test-model")
+func TestLoadNoModulesIsOk(t *testing.T) {
+	writeModules(t, ``, ``, ``)
 
 	cfg, err := Load("")
 	if err != nil {
 		t.Fatalf("unexpected error when no module files exist: %v", err)
 	}
-	if cfg.Provider.Endpoint != "https://api.example.com/v1" {
-		t.Errorf("endpoint = %q, want %q", cfg.Provider.Endpoint, "https://api.example.com/v1")
+	if cfg.Providers != nil {
+		t.Errorf("providers = %#v, want none without a models module", cfg.Providers)
 	}
-}
-
-func TestAgentCommitsDefaults(t *testing.T) {
-	home := t.TempDir()
-	t.Setenv("HOME", home)
-	t.Setenv("DEKU_PROVIDER_ENDPOINT", "https://api.example.com/v1")
-	t.Setenv("DEKU_PROVIDER_API_KEY", "sk-test-key")
-	t.Setenv("DEKU_PROVIDER_MODEL", "test-model")
-
-	cfg, err := Load("")
-	if err != nil {
-		t.Fatalf("Load() error = %v", err)
+	if cfg.Auth != nil {
+		t.Errorf("auth = %#v, want none without an auth module", cfg.Auth)
 	}
-	if cfg.AgentCommits.Mode != "off" {
-		t.Errorf("agent_commits.mode = %q, want off default", cfg.AgentCommits.Mode)
-	}
-	if cfg.AgentCommits.Validation != "go test ./..." {
-		t.Errorf("agent_commits.validation = %q, want go test ./...", cfg.AgentCommits.Validation)
-	}
-}
-
-func TestAgentCommitsFromSettingsAndEnv(t *testing.T) {
-	writeModules(t,
-		`{
-  "agent_commits": {
-    "mode": "ask",
-    "validation": "make test"
-  }
-}`,
-		`{ "api_key": "sk-file-key" }`,
-		`{
-  "endpoint": "https://api.file.com/v1",
-  "model": "file-model"
-}`)
-
-	cfg, err := Load("")
-	if err != nil {
-		t.Fatalf("Load() error = %v", err)
-	}
-	if cfg.AgentCommits.Mode != "ask" {
-		t.Errorf("agent_commits.mode = %q, want ask from settings", cfg.AgentCommits.Mode)
-	}
-	if cfg.AgentCommits.Validation != "make test" {
-		t.Errorf("agent_commits.validation = %q, want make test from settings", cfg.AgentCommits.Validation)
-	}
-
-	// Environment variable overrides the settings mode.
-	t.Setenv("DEKU_AGENT_COMMITS", "on")
-	cfg, err = Load("")
-	if err != nil {
-		t.Fatalf("Load() error = %v", err)
-	}
-	if cfg.AgentCommits.Mode != "on" {
-		t.Errorf("agent_commits.mode = %q, want on from env override", cfg.AgentCommits.Mode)
+	if !cfg.Selection.IsZero() {
+		t.Errorf("selection = %#v, want zero without settings defaults", cfg.Selection)
 	}
 }
 
@@ -372,204 +122,290 @@ func TestLoadInvalidJSONFails(t *testing.T) {
 	}
 }
 
-// --- Issue #34 acceptance: Env Substitution and Config Precedence ---
-
-func TestPlaceholderResolvesFromEnvironment(t *testing.T) {
+func TestLoadApprovalOverridesFromSettings(t *testing.T) {
 	writeModules(t,
-		``,
-		`{ "api_key": "${API_KEY}" }`,
 		`{
-  "endpoint": "${ENDPOINT}",
-  "model": "${MODEL}"
-}`)
-	t.Setenv("ENDPOINT", "https://api.example.com/v1")
-	t.Setenv("API_KEY", "sk-placeholder-key")
-	t.Setenv("MODEL", "placeholder-model")
+  "approval": {
+    "tools": { "edit": "destructive" },
+    "defaults": { "read": "prompt", "write": "auto" }
+  }
+}`, ``, ``)
 
 	cfg, err := Load("")
 	if err != nil {
 		t.Fatalf("Load() error = %v", err)
 	}
-	if cfg.Provider.Endpoint != "https://api.example.com/v1" {
-		t.Errorf("endpoint = %q, want env substitution", cfg.Provider.Endpoint)
+	if got := cfg.Approval.Tools["edit"]; got != "destructive" {
+		t.Errorf("approval.tools.edit = %q, want destructive", got)
 	}
-	if cfg.Provider.Model != "placeholder-model" {
-		t.Errorf("model = %q, want env substitution", cfg.Provider.Model)
+	if got := cfg.Approval.Defaults["read"]; got != "prompt" {
+		t.Errorf("approval.defaults.read = %q, want prompt", got)
 	}
-	if cfg.Provider.APIKey != "sk-placeholder-key" {
-		t.Errorf("api_key = %q, want env substitution", cfg.Provider.APIKey)
+	if got := cfg.Approval.Defaults["write"]; got != "auto" {
+		t.Errorf("approval.defaults.write = %q, want auto", got)
 	}
 }
 
-func TestPlaceholderWithDefaultFallsBackWhenUnset(t *testing.T) {
+func TestLoadRepoMapExcludeFromSettings(t *testing.T) {
 	writeModules(t,
-		``,
-		`{ "api_key": "${API_KEY:-sk-default-key}" }`,
 		`{
-  "endpoint": "${DEKU_PROVIDER_ENDPOINT:-https://default.example.com/v1}",
-  "model": "${MODEL:-default-model}"
-}`)
-	_ = os.Unsetenv("DEKU_PROVIDER_ENDPOINT")
-	_ = os.Unsetenv("API_KEY")
-	_ = os.Unsetenv("MODEL")
+  "repo_map": {
+    "exclude": ["vendor", "*.gen.go"]
+  }
+}`, ``, ``)
 
 	cfg, err := Load("")
 	if err != nil {
 		t.Fatalf("Load() error = %v", err)
 	}
-	if cfg.Provider.Endpoint != "https://default.example.com/v1" {
-		t.Errorf("endpoint = %q, want fallback default", cfg.Provider.Endpoint)
-	}
-	if cfg.Provider.APIKey != "sk-default-key" {
-		t.Errorf("api_key = %q, want fallback default", cfg.Provider.APIKey)
-	}
-	if cfg.Provider.Model != "default-model" {
-		t.Errorf("model = %q, want fallback default", cfg.Provider.Model)
+	if got := cfg.RepoMap.Exclude; !reflect.DeepEqual(got, []string{"vendor", "*.gen.go"}) {
+		t.Errorf("repo_map.exclude = %#v, want [vendor *.gen.go]", got)
 	}
 }
 
-func TestPlaceholderWithDefaultPrefersEnvWhenSet(t *testing.T) {
-	writeModules(t,
-		``,
-		`{ "api_key": "${API_KEY:-sk-default-key}" }`,
-		`{
-  "endpoint": "${ENDPOINT:-https://default.example.com/v1}",
-  "model": "${MODEL:-default-model}"
-}`)
-	t.Setenv("ENDPOINT", "https://api.example.com/v1")
-	t.Setenv("API_KEY", "sk-env-key")
-	t.Setenv("MODEL", "env-model")
+func TestAgentCommitsDefaults(t *testing.T) {
+	writeModules(t, ``, ``, ``)
 
 	cfg, err := Load("")
 	if err != nil {
 		t.Fatalf("Load() error = %v", err)
 	}
-	if cfg.Provider.Endpoint != "https://api.example.com/v1" {
-		t.Errorf("endpoint = %q, want env value over fallback", cfg.Provider.Endpoint)
+	if cfg.AgentCommits.Mode != "off" {
+		t.Errorf("agent_commits.mode = %q, want off default", cfg.AgentCommits.Mode)
 	}
-	if cfg.Provider.APIKey != "sk-env-key" {
-		t.Errorf("api_key = %q, want env value over fallback", cfg.Provider.APIKey)
-	}
-	if cfg.Provider.Model != "env-model" {
-		t.Errorf("model = %q, want env value over fallback", cfg.Provider.Model)
+	if cfg.AgentCommits.Validation != "go test ./..." {
+		t.Errorf("agent_commits.validation = %q, want go test ./...", cfg.AgentCommits.Validation)
 	}
 }
 
-func TestUnsetPlaceholderWithoutDefaultFails(t *testing.T) {
+func TestAgentCommitsFromSettingsAndEnv(t *testing.T) {
 	writeModules(t,
-		``,
-		`{ "api_key": "${API_KEY}" }`,
 		`{
-  "endpoint": "${ENDPOINT}",
-  "model": "file-model"
-}`)
-	_ = os.Unsetenv("ENDPOINT")
-	_ = os.Unsetenv("API_KEY")
-
-	_, err := Load("")
-	if err == nil {
-		t.Fatal("expected error for unset placeholder without default")
-	}
-	if !strings.Contains(err.Error(), "ENDPOINT") {
-		t.Errorf("error = %q, want it to name the unset variable", err)
-	}
-}
-
-func TestLiteralOverridesEnvironmentPlaceholder(t *testing.T) {
-	// models.json leaves "model" to the environment via ${SOME_MODEL}.
-	// The environment-as-source layer (DEKU_PROVIDER_MODEL) pins a literal at
-	// higher precedence, so the literal overrides the placeholder.
-	writeModules(t,
-		``,
-		`{ "api_key": "sk-file-key" }`,
-		`{
-  "endpoint": "https://api.example.com/v1",
-  "model": "${SOME_MODEL}"
-}`)
-	t.Setenv("SOME_MODEL", "placeholder-model")
-	t.Setenv("DEKU_PROVIDER_MODEL", "env-source-model")
-
-	cfg, err := Load("")
-	if err != nil {
-		t.Fatalf("Load() error = %v", err)
-	}
-	if cfg.Provider.Model != "env-source-model" {
-		t.Errorf("model = %q, want env-as-source literal to override placeholder", cfg.Provider.Model)
-	}
-}
-
-func TestConfigPrecedenceDefaultsGlobalEnv(t *testing.T) {
-	// agent_commits.mode: default "off" < settings "ask" < env-as-source "on".
-	writeModules(t,
-		`{ "agent_commits": { "mode": "ask" } }`,
-		`{ "api_key": "sk-file-key" }`,
-		`{
-  "endpoint": "https://api.file.com/v1",
-  "model": "file-model"
-}`)
+  "agent_commits": {
+    "mode": "ask",
+    "validation": "make test"
+  }
+}`, ``, ``)
 
 	cfg, err := Load("")
 	if err != nil {
 		t.Fatalf("Load() error = %v", err)
 	}
 	if cfg.AgentCommits.Mode != "ask" {
-		t.Errorf("mode = %q, want ask from settings over default off", cfg.AgentCommits.Mode)
+		t.Errorf("agent_commits.mode = %q, want ask from settings", cfg.AgentCommits.Mode)
+	}
+	if cfg.AgentCommits.Validation != "make test" {
+		t.Errorf("agent_commits.validation = %q, want make test from settings", cfg.AgentCommits.Validation)
 	}
 
+	// Environment variable overrides the settings mode.
 	t.Setenv("DEKU_AGENT_COMMITS", "on")
 	cfg, err = Load("")
 	if err != nil {
 		t.Fatalf("Load() error = %v", err)
 	}
 	if cfg.AgentCommits.Mode != "on" {
-		t.Errorf("mode = %q, want on from env-as-source", cfg.AgentCommits.Mode)
+		t.Errorf("agent_commits.mode = %q, want on from env override", cfg.AgentCommits.Mode)
 	}
 }
 
-func TestReplacePerSectionGlobalOverridesDefault(t *testing.T) {
-	// The validation field has no settings override, so the built-in default
-	// remains; when the settings section sets it, the settings value wins.
-	writeModules(t,
-		`{ "agent_commits": { "validation": "make ci" } }`,
-		`{ "api_key": "sk-file-key" }`,
-		`{
-  "endpoint": "https://api.file.com/v1",
-  "model": "file-model"
-}`)
+// --- Issue #39/#41 acceptance: Provider Registry and Selection declaration ---
+
+func TestLoadParsesNamedProviders(t *testing.T) {
+	writeModules(t, ``, standardAuth, standardModels)
 
 	cfg, err := Load("")
 	if err != nil {
 		t.Fatalf("Load() error = %v", err)
 	}
-	if cfg.AgentCommits.Validation != "make ci" {
-		t.Errorf("validation = %q, want make ci from settings", cfg.AgentCommits.Validation)
+	if len(cfg.Providers) != 2 {
+		t.Fatalf("providers = %#v, want two named entries", cfg.Providers)
+	}
+	first, ok := cfg.Providers["first"]
+	if !ok {
+		t.Fatalf("providers = %#v, want a provider named first", cfg.Providers)
+	}
+	if first.Name != "first" {
+		t.Errorf("first.Name = %q, want the map key", first.Name)
+	}
+	if first.Adapter != "openai-compatible" {
+		t.Errorf("first.Adapter = %q, want openai-compatible", first.Adapter)
+	}
+	if first.BaseURL != "https://api.first.example.com/v1" {
+		t.Errorf("first.BaseURL = %q, want the declared base URL", first.BaseURL)
+	}
+	if first.Auth != "first-auth" {
+		t.Errorf("first.Auth = %q, want the authentication name reference", first.Auth)
+	}
+	if want := []string{"model-a", "model-b"}; !reflect.DeepEqual(first.Models, want) {
+		t.Errorf("first.Models = %#v, want %#v", first.Models, want)
+	}
+	if _, ok := cfg.Providers["second"]; !ok {
+		t.Errorf("providers = %#v, want a provider named second", cfg.Providers)
 	}
 }
 
-// --- Issue #36 acceptance: modular sections and Deku Home .env ---
-
-func TestMissingModulesAreSimplyAbsent(t *testing.T) {
-	// Only settings.json exists; models and auth are absent and the required
-	// values come from the environment-as-source layer.
-	writeModules(t,
-		`{ "agent_commits": { "mode": "ask" } }`,
-		``,
-		``)
-	t.Setenv("DEKU_PROVIDER_ENDPOINT", "https://api.example.com/v1")
-	t.Setenv("DEKU_PROVIDER_API_KEY", "sk-test-key")
-	t.Setenv("DEKU_PROVIDER_MODEL", "test-model")
+func TestLoadParsesNamedAuthentication(t *testing.T) {
+	writeModules(t, ``, standardAuth, standardModels)
 
 	cfg, err := Load("")
 	if err != nil {
-		t.Fatalf("unexpected error when models/auth modules are absent: %v", err)
+		t.Fatalf("Load() error = %v", err)
 	}
-	if cfg.Provider.Endpoint != "https://api.example.com/v1" {
-		t.Errorf("endpoint = %q, want env value", cfg.Provider.Endpoint)
+	first, ok := cfg.Auth["first-auth"]
+	if !ok {
+		t.Fatalf("auth = %#v, want an entry named first-auth", cfg.Auth)
 	}
-	if cfg.AgentCommits.Mode != "ask" {
-		t.Errorf("agent_commits.mode = %q, want ask from settings", cfg.AgentCommits.Mode)
+	if first.Type != "api_key" {
+		t.Errorf("first-auth type = %q, want api_key", first.Type)
+	}
+	if first.APIKey != "sk-first" {
+		t.Errorf("first-auth api_key = %q, want the declared key", first.APIKey)
 	}
 }
+
+func TestLoadProviderBaseURLSubstitution(t *testing.T) {
+	writeModules(t,
+		``,
+		standardAuth,
+		`{
+  "providers": {
+    "custom": {
+      "adapter": "openai-compatible",
+      "base_url": "${CUSTOM_ENDPOINT}",
+      "auth": "first-auth",
+      "models": ["model-a"]
+    }
+  }
+}`)
+	t.Setenv("CUSTOM_ENDPOINT", "https://api.custom.example.com/v1")
+
+	cfg, err := Load("")
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	if got := cfg.Providers["custom"].BaseURL; got != "https://api.custom.example.com/v1" {
+		t.Errorf("base_url = %q, want env substitution", got)
+	}
+}
+
+func TestLoadAuthKeySubstitution(t *testing.T) {
+	writeModules(t,
+		``,
+		`{ "custom-auth": { "type": "api_key", "api_key": "${CUSTOM_KEY}" } }`,
+		standardModels)
+	t.Setenv("CUSTOM_KEY", "sk-substituted")
+
+	cfg, err := Load("")
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	if got := cfg.Auth["custom-auth"].APIKey; got != "sk-substituted" {
+		t.Errorf("api_key = %q, want env substitution", got)
+	}
+}
+
+func TestLoadAuthKeyWithDefaultFallsBack(t *testing.T) {
+	writeModules(t,
+		``,
+		`{ "custom-auth": { "type": "api_key", "api_key": "${CUSTOM_KEY:-sk-fallback}" } }`,
+		``)
+	_ = os.Unsetenv("CUSTOM_KEY")
+
+	cfg, err := Load("")
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	if got := cfg.Auth["custom-auth"].APIKey; got != "sk-fallback" {
+		t.Errorf("api_key = %q, want the placeholder default", got)
+	}
+}
+
+func TestLoadUnresolvedAuthKeyStaysEmpty(t *testing.T) {
+	// A missing secret makes the Provider unauthenticatable; it must not
+	// fail the whole startup, so other Providers remain usable.
+	writeModules(t,
+		``,
+		`{ "custom-auth": { "type": "api_key", "api_key": "${CUSTOM_KEY}" } }`,
+		standardModels)
+	_ = os.Unsetenv("CUSTOM_KEY")
+
+	cfg, err := Load("")
+	if err != nil {
+		t.Fatalf("Load() error = %v; an unresolved auth key must not fail Load", err)
+	}
+	if got := cfg.Auth["custom-auth"].APIKey; got != "" {
+		t.Errorf("api_key = %q, want empty for an unset placeholder", got)
+	}
+}
+
+func TestLoadDefaultSelectionFromSettings(t *testing.T) {
+	writeModules(t,
+		`{ "defaultProvider": "first", "defaultModel": "model-a" }`,
+		standardAuth,
+		standardModels)
+
+	cfg, err := Load("")
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	want := provider.Selection{Provider: "first", Model: "model-a"}
+	if cfg.Selection != want {
+		t.Errorf("selection = %#v, want %#v", cfg.Selection, want)
+	}
+}
+
+func TestLoadDefaultSelectionSubstitution(t *testing.T) {
+	writeModules(t,
+		`{ "defaultProvider": "${DEFAULT_PROVIDER}", "defaultModel": "${DEFAULT_MODEL:-model-a}" }`,
+		standardAuth,
+		standardModels)
+	t.Setenv("DEFAULT_PROVIDER", "second")
+	_ = os.Unsetenv("DEFAULT_MODEL")
+
+	cfg, err := Load("")
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	want := provider.Selection{Provider: "second", Model: "model-a"}
+	if cfg.Selection != want {
+		t.Errorf("selection = %#v, want %#v", cfg.Selection, want)
+	}
+}
+
+func TestLoadPartialDefaultSelectionAllowed(t *testing.T) {
+	// An incomplete default Selection is surfaced by Selection resolution at
+	// startup, not by Load.
+	writeModules(t, `{ "defaultProvider": "first" }`, ``, ``)
+
+	cfg, err := Load("")
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	if cfg.Selection.Provider != "first" || cfg.Selection.Model != "" {
+		t.Errorf("selection = %#v, want the partial default preserved", cfg.Selection)
+	}
+}
+
+func TestLoadAuthenticationsSeparateFromProviders(t *testing.T) {
+	// Providers without any auth module still load: their Authentication
+	// simply does not resolve, which Selection reports — the declaration and
+	// the credentials are independent modules.
+	writeModules(t, ``, ``, standardModels)
+
+	cfg, err := Load("")
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	if len(cfg.Providers) != 2 {
+		t.Errorf("providers = %#v, want both entries without an auth module", cfg.Providers)
+	}
+	if cfg.Auth != nil {
+		t.Errorf("auth = %#v, want none", cfg.Auth)
+	}
+}
+
+// --- Issue #34/#36 acceptance, ported: Env Substitution, .env, precedence ---
 
 func TestSectionsReplaceAsAWhole(t *testing.T) {
 	// settings.json declares only the approval section. It replaces the
@@ -577,11 +413,8 @@ func TestSectionsReplaceAsAWhole(t *testing.T) {
 	// from any other source, and the other modules are independent sections.
 	writeModules(t,
 		`{ "approval": { "tools": { "edit": "destructive" } } }`,
-		`{ "api_key": "sk-file-key" }`,
-		`{
-  "endpoint": "https://api.file.com/v1",
-  "model": "file-model"
-}`)
+		standardAuth,
+		standardModels)
 
 	cfg, err := Load("")
 	if err != nil {
@@ -603,105 +436,61 @@ func TestSectionsReplaceAsAWhole(t *testing.T) {
 	}
 }
 
+func TestLiteralOverridesEnvironmentPlaceholder(t *testing.T) {
+	// The global settings module leaves the validation command to the
+	// environment; a trusted project's literal replaces it at higher
+	// precedence, pinning a value the lower source left to the environment.
+	project := t.TempDir()
+	writeModules(t,
+		`{ "agent_commits": { "validation": "${VALIDATION_CMD}" } }`, ``, ``)
+	writeProject(t, project, map[string]string{
+		"settings.json": `{ "agent_commits": { "validation": "make ci" } }`,
+	})
+	grantTrust(t, project)
+	t.Setenv("VALIDATION_CMD", "go test ./...")
+
+	cfg, err := Load(project)
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	if cfg.AgentCommits.Validation != "make ci" {
+		t.Errorf("validation = %q, want the higher-precedence literal to override the placeholder", cfg.AgentCommits.Validation)
+	}
+}
+
 func TestLoadFromDekuHomeEnvFile(t *testing.T) {
-	writeEnv(t, `# Deku Home environment
-DEKU_PROVIDER_ENDPOINT=https://api.envfile.com/v1
-DEKU_PROVIDER_API_KEY=sk-envfile-key
-DEKU_PROVIDER_MODEL=envfile-model
-`)
+	writeDekuHome(t, map[string]string{
+		"models.json": `{
+  "providers": {
+    "custom": {
+      "adapter": "openai-compatible",
+      "base_url": "${DEKU_ENDPOINT}",
+      "auth": "custom-auth",
+      "models": ["model-a"]
+    }
+  }
+}`,
+		"auth.json": `{ "custom-auth": { "type": "api_key", "api_key": "${DEKU_API_KEY}" } }`,
+		".env": `DEKU_ENDPOINT=https://api.envfile.example.com/v1
+DEKU_API_KEY=sk-envfile-key
+`,
+	})
 
 	cfg, err := Load("")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if cfg.Provider.Endpoint != "https://api.envfile.com/v1" {
-		t.Errorf("endpoint = %q, want %q", cfg.Provider.Endpoint, "https://api.envfile.com/v1")
+	if got := cfg.Providers["custom"].BaseURL; got != "https://api.envfile.example.com/v1" {
+		t.Errorf("base_url = %q, want substitution from the .env file", got)
 	}
-	if cfg.Provider.APIKey != "sk-envfile-key" {
-		t.Errorf("api_key = %q, want %q", cfg.Provider.APIKey, "sk-envfile-key")
-	}
-	if cfg.Provider.Model != "envfile-model" {
-		t.Errorf("model = %q, want %q", cfg.Provider.Model, "envfile-model")
+	if got := cfg.Auth["custom-auth"].APIKey; got != "sk-envfile-key" {
+		t.Errorf("api_key = %q, want substitution from the .env file", got)
 	}
 }
 
 func TestProcessEnvWinsOverDekuHomeEnv(t *testing.T) {
-	writeEnv(t, `DEKU_PROVIDER_ENDPOINT=https://api.envfile.com/v1
-DEKU_PROVIDER_API_KEY=sk-envfile-key
-DEKU_PROVIDER_MODEL=envfile-model
-`)
-	t.Setenv("DEKU_PROVIDER_ENDPOINT", "https://api.process.com/v1")
-	t.Setenv("DEKU_PROVIDER_API_KEY", "sk-process-key")
-	t.Setenv("DEKU_PROVIDER_MODEL", "process-model")
-
-	cfg, err := Load("")
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if cfg.Provider.Endpoint != "https://api.process.com/v1" {
-		t.Errorf("endpoint = %q, want process env to win over .env", cfg.Provider.Endpoint)
-	}
-	if cfg.Provider.APIKey != "sk-process-key" {
-		t.Errorf("api_key = %q, want process env to win over .env", cfg.Provider.APIKey)
-	}
-	if cfg.Provider.Model != "process-model" {
-		t.Errorf("model = %q, want process env to win over .env", cfg.Provider.Model)
-	}
-}
-
-func TestDekuHomeEnvWinsOverModuleFiles(t *testing.T) {
 	writeDekuHome(t, map[string]string{
-		"auth.json": `{ "api_key": "sk-file-key" }`,
-		"models.json": `{
-  "endpoint": "https://api.file.com/v1",
-  "model": "file-model"
-}`,
-		".env": `DEKU_PROVIDER_API_KEY=sk-envfile-key
-`,
-	})
-
-	cfg, err := Load("")
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if cfg.Provider.APIKey != "sk-envfile-key" {
-		t.Errorf("api_key = %q, want .env to win over auth.json", cfg.Provider.APIKey)
-	}
-	// Values absent from .env still come from the module files.
-	if cfg.Provider.Endpoint != "https://api.file.com/v1" {
-		t.Errorf("endpoint = %q, want fallback to models.json", cfg.Provider.Endpoint)
-	}
-}
-
-func TestEnvFileFeedsSubstitution(t *testing.T) {
-	// auth.json references a variable defined only in the Deku Home .env.
-	writeDekuHome(t, map[string]string{
-		"auth.json": `{ "api_key": "${DEKU_API_KEY}" }`,
-		"models.json": `{
-  "endpoint": "${DEKU_ENDPOINT:-https://fallback.example.com/v1}",
-  "model": "envfile-model"
-}`,
-		".env": `DEKU_API_KEY=sk-substituted-key
-DEKU_ENDPOINT=https://api.substituted.com/v1
-`,
-	})
-
-	cfg, err := Load("")
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if cfg.Provider.APIKey != "sk-substituted-key" {
-		t.Errorf("api_key = %q, want substitution from .env", cfg.Provider.APIKey)
-	}
-	if cfg.Provider.Endpoint != "https://api.substituted.com/v1" {
-		t.Errorf("endpoint = %q, want substitution from .env", cfg.Provider.Endpoint)
-	}
-}
-
-func TestProcessEnvWinsOverEnvFileInSubstitution(t *testing.T) {
-	writeDekuHome(t, map[string]string{
-		"auth.json":   `{ "api_key": "${DEKU_API_KEY}" }`,
-		"models.json": `{ "endpoint": "https://api.file.com/v1", "model": "file-model" }`,
+		"auth.json": `{ "custom-auth": { "type": "api_key", "api_key": "${DEKU_API_KEY}" } }`,
 		".env": `DEKU_API_KEY=sk-envfile-key
 `,
 	})
@@ -711,13 +500,13 @@ func TestProcessEnvWinsOverEnvFileInSubstitution(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if cfg.Provider.APIKey != "sk-process-key" {
-		t.Errorf("api_key = %q, want process env to win in substitution", cfg.Provider.APIKey)
+	if got := cfg.Auth["custom-auth"].APIKey; got != "sk-process-key" {
+		t.Errorf("api_key = %q, want process env to win over .env", got)
 	}
 }
 
 func TestMalformedEnvFileFails(t *testing.T) {
-	writeEnv(t, `DEKU_PROVIDER_ENDPOINT=https://api.example.com/v1
+	writeEnv(t, `DEKU_API_KEY=sk-key
 this line has no equals sign
 `)
 
@@ -730,25 +519,7 @@ this line has no equals sign
 	}
 }
 
-func TestSettingsPlaceholderResolvesFromEnvFile(t *testing.T) {
-	writeDekuHome(t, map[string]string{
-		"settings.json": `{ "agent_commits": { "validation": "${VALIDATION_CMD}" } }`,
-		"auth.json":     `{ "api_key": "sk-file-key" }`,
-		"models.json":   `{ "endpoint": "https://api.file.com/v1", "model": "file-model" }`,
-		".env": `VALIDATION_CMD=make ci
-`,
-	})
-
-	cfg, err := Load("")
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if cfg.AgentCommits.Validation != "make ci" {
-		t.Errorf("validation = %q, want substitution from .env in settings", cfg.AgentCommits.Validation)
-	}
-}
-
-// --- Issue #38 acceptance: Project Config and Project Trust ---
+// --- Issue #38 acceptance, ported: Project Config and Project Trust ---
 
 // writeProject writes Project Config modules under <root>/.deku for the
 // current test. An empty body skips that file, so a missing module is simply
@@ -786,58 +557,46 @@ func grantTrust(t *testing.T, projects ...string) {
 	}
 }
 
-func TestProjectConfigOverridesDekuHome(t *testing.T) {
+// projectModels is a project-scope models module declaring one Provider that
+// shadows nothing in the global registry on purpose.
+const projectModels = `{
+  "providers": {
+    "project-provider": {
+      "adapter": "openai-compatible",
+      "base_url": "https://api.project.example.com/v1",
+      "auth": "project-auth",
+      "models": ["project-model"]
+    }
+  }
+}`
+
+func TestProjectModelsReplaceGlobalAsAWhole(t *testing.T) {
 	project := t.TempDir()
-	writeModules(t,
-		`{ "agent_commits": { "mode": "ask" } }`,
-		`{ "api_key": "sk-global-key" }`,
-		`{
-  "endpoint": "https://api.global.com/v1",
-  "model": "global-model"
-}`)
-	writeProject(t, project, map[string]string{
-		"settings.json": `{ "agent_commits": { "mode": "on" } }`,
-		"models.json": `{
-  "endpoint": "https://api.project.com/v1",
-  "model": "project-model"
-}`,
-	})
+	writeModules(t, ``, standardAuth, standardModels)
+	writeProject(t, project, map[string]string{"models.json": projectModels})
 	grantTrust(t, project)
 
 	cfg, err := Load(project)
 	if err != nil {
 		t.Fatalf("Load() error = %v", err)
 	}
-	if cfg.AgentCommits.Mode != "on" {
-		t.Errorf("agent_commits.mode = %q, want project on over global ask", cfg.AgentCommits.Mode)
+	if len(cfg.Providers) != 1 {
+		t.Fatalf("providers = %#v, want only the project registry", cfg.Providers)
 	}
-	if cfg.Provider.Endpoint != "https://api.project.com/v1" {
-		t.Errorf("endpoint = %q, want project value", cfg.Provider.Endpoint)
+	entry, ok := cfg.Providers["project-provider"]
+	if !ok {
+		t.Fatalf("providers = %#v, want the project provider", cfg.Providers)
 	}
-	if cfg.Provider.Model != "project-model" {
-		t.Errorf("model = %q, want project value", cfg.Provider.Model)
-	}
-	// The project has no auth module, so the auth section still comes from
-	// Deku Home.
-	if cfg.Provider.APIKey != "sk-global-key" {
-		t.Errorf("api_key = %q, want global fallback", cfg.Provider.APIKey)
+	if entry.BaseURL != "https://api.project.example.com/v1" {
+		t.Errorf("base_url = %q, want the project value", entry.BaseURL)
 	}
 }
 
-func TestProjectConfigReplacesGlobalSectionAsAWhole(t *testing.T) {
+func TestProjectAuthReplacesGlobalAsAWhole(t *testing.T) {
 	project := t.TempDir()
-	writeModules(t,
-		`{ "agent_commits": { "mode": "ask", "validation": "make ci" } }`,
-		`{ "api_key": "sk-global-key" }`,
-		`{
-  "endpoint": "https://api.global.com/v1",
-  "model": "global-model"
-}`)
-	// The project settings section omits validation: replace-per-section
-	// means it falls back to the built-in default, not to the Deku Home
-	// value.
+	writeModules(t, ``, standardAuth, standardModels)
 	writeProject(t, project, map[string]string{
-		"settings.json": `{ "agent_commits": { "mode": "on" } }`,
+		"auth.json": `{ "project-auth": { "type": "api_key", "api_key": "sk-project" } }`,
 	})
 	grantTrust(t, project)
 
@@ -845,29 +604,41 @@ func TestProjectConfigReplacesGlobalSectionAsAWhole(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Load() error = %v", err)
 	}
-	if cfg.AgentCommits.Mode != "on" {
-		t.Errorf("agent_commits.mode = %q, want project on", cfg.AgentCommits.Mode)
+	if len(cfg.Auth) != 1 {
+		t.Fatalf("auth = %#v, want only the project credentials", cfg.Auth)
 	}
-	if cfg.AgentCommits.Validation != "go test ./..." {
-		t.Errorf("agent_commits.validation = %q, want built-in default, not Deku Home value", cfg.AgentCommits.Validation)
+	if got := cfg.Auth["project-auth"].APIKey; got != "sk-project" {
+		t.Errorf("project-auth api_key = %q, want the project value", got)
+	}
+}
+
+func TestProjectSettingsReplaceGlobalDefaults(t *testing.T) {
+	project := t.TempDir()
+	writeModules(t,
+		`{ "defaultProvider": "first", "defaultModel": "model-a" }`,
+		standardAuth,
+		standardModels)
+	writeProject(t, project, map[string]string{
+		"settings.json": `{ "defaultProvider": "project-provider", "defaultModel": "project-model" }`,
+	})
+	grantTrust(t, project)
+
+	cfg, err := Load(project)
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	want := provider.Selection{Provider: "project-provider", Model: "project-model"}
+	if cfg.Selection != want {
+		t.Errorf("selection = %#v, want the project defaults", cfg.Selection)
 	}
 }
 
 func TestProjectModuleAbsentLeavesGlobalSection(t *testing.T) {
 	project := t.TempDir()
-	writeModules(t,
-		`{ "agent_commits": { "mode": "ask" } }`,
-		`{ "api_key": "sk-global-key" }`,
-		`{
-  "endpoint": "https://api.global.com/v1",
-  "model": "global-model"
-}`)
-	// The project carries only a models module; the settings section stands.
+	writeModules(t, ``, standardAuth, standardModels)
+	// The project carries only a settings module; the registry stands.
 	writeProject(t, project, map[string]string{
-		"models.json": `{
-  "endpoint": "https://api.project.com/v1",
-  "model": "project-model"
-}`,
+		"settings.json": `{ "agent_commits": { "mode": "on" } }`,
 	})
 	grantTrust(t, project)
 
@@ -875,98 +646,63 @@ func TestProjectModuleAbsentLeavesGlobalSection(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Load() error = %v", err)
 	}
-	if cfg.AgentCommits.Mode != "ask" {
-		t.Errorf("agent_commits.mode = %q, want global ask when project has no settings module", cfg.AgentCommits.Mode)
+	if len(cfg.Providers) != 2 {
+		t.Errorf("providers = %#v, want the global registry when the project has no models module", cfg.Providers)
 	}
-	if cfg.Provider.Endpoint != "https://api.project.com/v1" {
-		t.Errorf("endpoint = %q, want project value", cfg.Provider.Endpoint)
+	if cfg.AgentCommits.Mode != "on" {
+		t.Errorf("agent_commits.mode = %q, want project value", cfg.AgentCommits.Mode)
 	}
 }
 
 func TestUntrustedProjectConfigIgnored(t *testing.T) {
 	project := t.TempDir()
-	writeModules(t,
-		`{ "agent_commits": { "mode": "ask" } }`,
-		`{ "api_key": "sk-global-key" }`,
-		`{
-  "endpoint": "https://api.global.com/v1",
-  "model": "global-model"
-}`)
-	writeProject(t, project, map[string]string{
-		"settings.json": `{ "agent_commits": { "mode": "on" } }`,
-	})
+	writeModules(t, ``, standardAuth, standardModels)
+	writeProject(t, project, map[string]string{"models.json": projectModels})
 	// No trust record: the project is untrusted.
 
 	cfg, err := Load(project)
 	if err != nil {
 		t.Fatalf("Load() error = %v", err)
 	}
-	if cfg.AgentCommits.Mode != "ask" {
-		t.Errorf("agent_commits.mode = %q, want global ask; untrusted project must be ignored", cfg.AgentCommits.Mode)
-	}
-	if cfg.Provider.Endpoint != "https://api.global.com/v1" {
-		t.Errorf("endpoint = %q, want global value", cfg.Provider.Endpoint)
+	if len(cfg.Providers) != 2 {
+		t.Errorf("providers = %#v, want the global registry; untrusted project must be ignored", cfg.Providers)
 	}
 }
 
 func TestUntrustedProjectConfigNotLoaded(t *testing.T) {
 	project := t.TempDir()
-	writeModules(t,
-		``,
-		`{ "api_key": "sk-global-key" }`,
-		`{
-  "endpoint": "https://api.global.com/v1",
-  "model": "global-model"
-}`)
+	writeModules(t, ``, standardAuth, standardModels)
 	// A malformed project module must not fail the load: an untrusted
 	// project's files are never read.
-	writeProject(t, project, map[string]string{
-		"settings.json": `{ not valid json`,
-	})
+	writeProject(t, project, map[string]string{"models.json": `{ not valid json`})
 
 	cfg, err := Load(project)
 	if err != nil {
 		t.Fatalf("Load() error = %v; untrusted project files must not be read", err)
 	}
-	if cfg.Provider.Endpoint != "https://api.global.com/v1" {
-		t.Errorf("endpoint = %q, want global value", cfg.Provider.Endpoint)
+	if len(cfg.Providers) != 2 {
+		t.Errorf("providers = %#v, want the global registry", cfg.Providers)
 	}
 }
 
 func TestMissingTrustRecordTrustsNothing(t *testing.T) {
 	project := t.TempDir()
-	writeModules(t,
-		`{ "agent_commits": { "mode": "ask" } }`,
-		`{ "api_key": "sk-global-key" }`,
-		`{
-  "endpoint": "https://api.global.com/v1",
-  "model": "global-model"
-}`)
-	writeProject(t, project, map[string]string{
-		"settings.json": `{ "agent_commits": { "mode": "on" } }`,
-	})
+	writeModules(t, ``, standardAuth, standardModels)
+	writeProject(t, project, map[string]string{"models.json": projectModels})
 
 	cfg, err := Load(project)
 	if err != nil {
 		t.Fatalf("Load() error = %v", err)
 	}
-	if cfg.AgentCommits.Mode != "ask" {
-		t.Errorf("agent_commits.mode = %q, want global ask; absent trust record must trust nothing", cfg.AgentCommits.Mode)
+	if len(cfg.Providers) != 2 {
+		t.Errorf("providers = %#v, want the global registry; absent trust record must trust nothing", cfg.Providers)
 	}
 }
 
 func TestTrustRequiresExactProjectRoot(t *testing.T) {
 	project := t.TempDir()
-	writeModules(t,
-		`{ "agent_commits": { "mode": "ask" } }`,
-		`{ "api_key": "sk-global-key" }`,
-		`{
-  "endpoint": "https://api.global.com/v1",
-  "model": "global-model"
-}`)
-	writeProject(t, project, map[string]string{
-		"settings.json": `{ "agent_commits": { "mode": "on" } }`,
-	})
+	writeModules(t, ``, standardAuth, standardModels)
+	writeProject(t, project, map[string]string{"models.json": projectModels})
 	// A sibling path and a nested path are not the project root.
 	grantTrust(t, project+"-copy", filepath.Join(project, "sub"))
 
@@ -974,8 +710,8 @@ func TestTrustRequiresExactProjectRoot(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Load() error = %v", err)
 	}
-	if cfg.AgentCommits.Mode != "ask" {
-		t.Errorf("agent_commits.mode = %q, want global ask; trust must match the exact root", cfg.AgentCommits.Mode)
+	if len(cfg.Providers) != 2 {
+		t.Errorf("providers = %#v, want the global registry; trust must match the exact root", cfg.Providers)
 	}
 
 	// Path normalization: a cleaned variant of the same root matches.
@@ -984,8 +720,8 @@ func TestTrustRequiresExactProjectRoot(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Load() error = %v", err)
 	}
-	if cfg.AgentCommits.Mode != "on" {
-		t.Errorf("agent_commits.mode = %q, want on after trust via cleaned path", cfg.AgentCommits.Mode)
+	if len(cfg.Providers) != 1 {
+		t.Errorf("providers = %#v, want the project registry after trust via cleaned path", cfg.Providers)
 	}
 }
 
@@ -1004,41 +740,15 @@ func TestMalformedTrustRecordFails(t *testing.T) {
 	}
 }
 
-func TestProjectConfigEnvSubstitution(t *testing.T) {
+func TestProjectAuthSubstitutionFromEnvFile(t *testing.T) {
 	project := t.TempDir()
 	writeDekuHome(t, map[string]string{
-		"models.json": `{ "endpoint": "https://api.global.com/v1", "model": "global-model" }`,
 		".env": `PROJECT_KEY=sk-project-envfile
 `,
 	})
 	writeProject(t, project, map[string]string{
-		"auth.json": `{ "api_key": "${PROJECT_KEY}" }`,
-		"models.json": `{
-  "endpoint": "${PROJECT_ENDPOINT:-https://fallback.project.com/v1}",
-  "model": "project-model"
-}`,
-	})
-	grantTrust(t, project)
-	t.Setenv("PROJECT_ENDPOINT", "https://api.project.com/v1")
-
-	cfg, err := Load(project)
-	if err != nil {
-		t.Fatalf("Load() error = %v", err)
-	}
-	if cfg.Provider.APIKey != "sk-project-envfile" {
-		t.Errorf("api_key = %q, want substitution from Deku Home .env", cfg.Provider.APIKey)
-	}
-	if cfg.Provider.Endpoint != "https://api.project.com/v1" {
-		t.Errorf("endpoint = %q, want substitution from process environment", cfg.Provider.Endpoint)
-	}
-}
-
-func TestProjectModulesSupplyRequiredValues(t *testing.T) {
-	project := t.TempDir()
-	writeDekuHome(t, map[string]string{})
-	writeProject(t, project, map[string]string{
-		"auth.json":   `{ "api_key": "sk-project-key" }`,
-		"models.json": `{ "endpoint": "https://api.project.com/v1", "model": "project-model" }`,
+		"auth.json":   `{ "project-auth": { "type": "api_key", "api_key": "${PROJECT_KEY}" } }`,
+		"models.json": projectModels,
 	})
 	grantTrust(t, project)
 
@@ -1046,51 +756,14 @@ func TestProjectModulesSupplyRequiredValues(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Load() error = %v", err)
 	}
-	if cfg.Provider.APIKey != "sk-project-key" {
-		t.Errorf("api_key = %q, want project value", cfg.Provider.APIKey)
-	}
-
-	// The same repository untrusted supplies nothing: required values are
-	// missing and Load fails fast.
-	other := t.TempDir()
-	writeProject(t, other, map[string]string{
-		"auth.json":   `{ "api_key": "sk-project-key" }`,
-		"models.json": `{ "endpoint": "https://api.project.com/v1", "model": "project-model" }`,
-	})
-	if _, err := Load(other); err == nil {
-		t.Fatal("expected error when an untrusted project cannot supply required values")
-	}
-}
-
-func TestProjectRootMissingDirectoryIgnored(t *testing.T) {
-	writeModules(t,
-		``,
-		`{ "api_key": "sk-global-key" }`,
-		`{
-  "endpoint": "https://api.global.com/v1",
-  "model": "global-model"
-}`)
-	missing := filepath.Join(t.TempDir(), "nope")
-	grantTrust(t, missing)
-
-	cfg, err := Load(missing)
-	if err != nil {
-		t.Fatalf("Load() error = %v", err)
-	}
-	if cfg.Provider.Endpoint != "https://api.global.com/v1" {
-		t.Errorf("endpoint = %q, want global value for missing project root", cfg.Provider.Endpoint)
+	if got := cfg.Auth["project-auth"].APIKey; got != "sk-project-envfile" {
+		t.Errorf("api_key = %q, want substitution from Deku Home .env", got)
 	}
 }
 
 func TestProjectScopeReportedWhenLoaded(t *testing.T) {
 	project := t.TempDir()
-	writeModules(t,
-		`{ "agent_commits": { "mode": "ask" } }`,
-		`{ "api_key": "sk-global-key" }`,
-		`{
-  "endpoint": "https://api.global.com/v1",
-  "model": "global-model"
-}`)
+	writeModules(t, ``, standardAuth, standardModels)
 	writeProject(t, project, map[string]string{
 		"settings.json": `{ "agent_commits": { "mode": "on" } }`,
 	})
@@ -1110,13 +783,7 @@ func TestProjectScopeReportedWhenLoaded(t *testing.T) {
 
 func TestProjectScopeReportedWhenUntrusted(t *testing.T) {
 	project := t.TempDir()
-	writeModules(t,
-		`{ "agent_commits": { "mode": "ask" } }`,
-		`{ "api_key": "sk-global-key" }`,
-		`{
-  "endpoint": "https://api.global.com/v1",
-  "model": "global-model"
-}`)
+	writeModules(t, ``, standardAuth, standardModels)
 	writeProject(t, project, map[string]string{
 		"settings.json": `{ "agent_commits": { "mode": "on" } }`,
 	})
@@ -1134,13 +801,7 @@ func TestProjectScopeReportedWhenUntrusted(t *testing.T) {
 }
 
 func TestProjectScopeAbsentOutsideRepository(t *testing.T) {
-	writeModules(t,
-		``,
-		`{ "api_key": "sk-global-key" }`,
-		`{
-  "endpoint": "https://api.global.com/v1",
-  "model": "global-model"
-}`)
+	writeModules(t, ``, standardAuth, standardModels)
 
 	cfg, err := Load("")
 	if err != nil {
@@ -1153,13 +814,7 @@ func TestProjectScopeAbsentOutsideRepository(t *testing.T) {
 
 func TestProjectScopeTrustedEmptyDirectoryNotLoaded(t *testing.T) {
 	project := t.TempDir()
-	writeModules(t,
-		`{ "agent_commits": { "mode": "ask" } }`,
-		`{ "api_key": "sk-global-key" }`,
-		`{
-  "endpoint": "https://api.global.com/v1",
-  "model": "global-model"
-}`)
+	writeModules(t, ``, standardAuth, standardModels)
 	if err := os.MkdirAll(filepath.Join(project, ".deku"), 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -1176,10 +831,7 @@ func TestProjectScopeTrustedEmptyDirectoryNotLoaded(t *testing.T) {
 
 func TestGrantTrustCreatesRecord(t *testing.T) {
 	project := t.TempDir()
-	writeDekuHome(t, map[string]string{
-		"auth.json":   `{ "api_key": "sk-global-key" }`,
-		"models.json": `{ "endpoint": "https://api.global.com/v1", "model": "global-model" }`,
-	})
+	writeDekuHome(t, map[string]string{})
 
 	if err := GrantTrust(project); err != nil {
 		t.Fatalf("GrantTrust() error = %v", err)

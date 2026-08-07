@@ -61,6 +61,29 @@ Introduce the Adapter/Provider split and runtime selection.
 - **Seam:** Agent module for end-to-end Selection; provider registry factory for adapter construction. Custom (URL+key) Providers only — native subscriptions are out of scope.
 - **Done when:** multiple custom Providers configure and run; `/model` switches the active Provider+Model between Turns and persists on resume; errors surface for missing/blank Selection; spec user stories 11–18 pass.
 
+**Delivered by issue #39:** the Provider Registry and Adapter factory. `models.json`
+now declares named Providers (Adapter family, base URL, Authentication by
+name, Models) and `auth.json` named Authentication entries, replacing the
+former single-provider `endpoint`/`model`/`api_key` fields and the
+`DEKU_PROVIDER_*` environment variables. `provider.NewRegistry` validates every
+entry at construction — an unsupported Adapter family, an unknown or
+unsupported Authentication, a missing base URL, or an empty Model Registry
+fails explicitly — and `Resolve` builds the correct Adapter for a Selection.
+An Authentication whose key does not resolve leaves its Provider declared but
+unable to authenticate, so a missing secret never blocks the other Providers.
+
+**Delivered by issue #41:** Selection and the `/model` command.
+`defaultProvider`/`defaultModel` in `settings.json` provide the default
+Selection; the CLI resolves the per-Session override recorded in the Session
+transcript over it and reports explicitly when no Provider or Model is
+selected, when the selected Provider is unknown, or when it cannot
+authenticate. `/model` lists only Providers the Agent can authenticate to with
+their Models; `/model <provider> <model>` switches the active Selection
+between Turns through `agent.SetSelection` and records the override in the
+Session, so it is restored on `--resume`. User stories 11–18 pass; the
+environment remains a value source through `${VAR}` substitution and the Deku
+Home `.env` file.
+
 ## Phase 3 — Approval transparency (ADR 0009)
 
 Make gated actions visible before execution.

@@ -145,3 +145,175 @@ func splitJSONLines(data []byte) [][]byte {
 	}
 	return lines
 }
+
+func TestSessionRecordsAndRestoresSelection(t *testing.T) {
+	store, err := NewStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewStore() error = %v", err)
+	}
+	created, err := store.Create()
+	if err != nil {
+		t.Fatalf("Create() error = %v", err)
+	}
+	if err := created.Append(Message{Role: RoleUser, Content: "hello"}); err != nil {
+		t.Fatalf("Append() error = %v", err)
+	}
+	if err := created.RecordSelection(Selection{Provider: "openrouter", Model: "model-a"}); err != nil {
+		t.Fatalf("RecordSelection() error = %v", err)
+	}
+
+	// The in-memory session reports the override immediately.
+	got, ok := created.LatestSelection()
+	if !ok || got != (Selection{Provider: "openrouter", Model: "model-a"}) {
+		t.Errorf("LatestSelection() = %#v, %v; want the recorded override", got, ok)
+	}
+
+	resumed, err := store.Resume(created.ID)
+	if err != nil {
+		t.Fatalf("Resume() error = %v", err)
+	}
+	// The Selection record is not a conversation message.
+	if len(resumed.Messages) != 1 || resumed.Messages[0].Content != "hello" {
+		t.Errorf("resumed messages = %#v, want only the conversation message", resumed.Messages)
+	}
+	got, ok = resumed.LatestSelection()
+	if !ok || got != (Selection{Provider: "openrouter", Model: "model-a"}) {
+		t.Errorf("resumed LatestSelection() = %#v, %v; want the override restored", got, ok)
+	}
+}
+
+func TestSessionLatestSelectionIsTheLastRecorded(t *testing.T) {
+	store, err := NewStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewStore() error = %v", err)
+	}
+	created, err := store.Create()
+	if err != nil {
+		t.Fatalf("Create() error = %v", err)
+	}
+	if err := created.RecordSelection(Selection{Provider: "first", Model: "model-a"}); err != nil {
+		t.Fatalf("RecordSelection() error = %v", err)
+	}
+	if err := created.RecordSelection(Selection{Provider: "second", Model: "model-b"}); err != nil {
+		t.Fatalf("RecordSelection() error = %v", err)
+	}
+
+	resumed, err := store.Resume(created.ID)
+	if err != nil {
+		t.Fatalf("Resume() error = %v", err)
+	}
+	got, ok := resumed.LatestSelection()
+	if !ok || got != (Selection{Provider: "second", Model: "model-b"}) {
+		t.Errorf("LatestSelection() = %#v, %v; want the last recorded override", got, ok)
+	}
+}
+
+func TestSessionSelectionInterleavesWithMessages(t *testing.T) {
+	store, err := NewStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewStore() error = %v", err)
+	}
+	created, err := store.Create()
+	if err != nil {
+		t.Fatalf("Create() error = %v", err)
+	}
+	if err := created.Append(Message{Role: RoleUser, Content: "first"}); err != nil {
+		t.Fatalf("Append() error = %v", err)
+	}
+	if err := created.RecordSelection(Selection{Provider: "other", Model: "model-x"}); err != nil {
+		t.Fatalf("RecordSelection() error = %v", err)
+	}
+	if err := created.Append(Message{Role: RoleAssistant, Content: "second"}); err != nil {
+		t.Fatalf("Append() error = %v", err)
+	}
+
+	resumed, err := store.Resume(created.ID)
+	if err != nil {
+		t.Fatalf("Resume() error = %v", err)
+	}
+	if len(resumed.Messages) != 2 {
+		t.Fatalf("resumed messages = %#v, want both conversation messages", resumed.Messages)
+	}
+	if got, ok := resumed.LatestSelection(); !ok || got.Provider != "other" {
+		t.Errorf("resumed LatestSelection() = %#v, %v; want the interleaved override", got, ok)
+	}
+}
+
+func TestSessionRecordSelectionValidates(t *testing.T) {
+	store, err := NewStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewStore() error = %v", err)
+	}
+	created, err := store.Create()
+	if err != nil {
+		t.Fatalf("Create() error = %v", err)
+	}
+	for _, invalid := range []Selection{
+		{},
+		{Provider: "provider-only"},
+		{Model: "model-only"},
+		{Provider: "  ", Model: "model-a"},
+	} {
+		if err := created.RecordSelection(invalid); err == nil {
+			t.Errorf("RecordSelection(%#v) error = nil, want validation error", invalid)
+		}
+	}
+	if _, ok := created.LatestSelection(); ok {
+		t.Error("LatestSelection() after invalid records = ok, want none")
+	}
+	// Nothing was persisted.
+	data, err := os.ReadFile(created.Path())
+	if err != nil {
+		t.Fatalf("ReadFile() error = %v", err)
+	}
+	if len(splitJSONLines(data)) != 0 {
+		t.Errorf("session file has records after invalid RecordSelection calls, want none")
+	}
+}
+
+func TestSessionResumesLegacyTranscriptWithoutSelection(t *testing.T) {
+	// Transcripts written before Selection records existed hold bare message
+	// lines; they resume unchanged and report no override.
+	store, err := NewStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewStore() error = %v", err)
+	}
+	created, err := store.Create()
+	if err != nil {
+		t.Fatalf("Create() error = %v", err)
+	}
+	legacy := `{"role":"user","content":"legacy request"}
+{"role":"assistant","content":"legacy response"}
+`
+	if err := os.WriteFile(created.Path(), []byte(legacy), 0o600); err != nil {
+		t.Fatalf("WriteFile() error = %v", err)
+	}
+
+	resumed, err := store.Resume(created.ID)
+	if err != nil {
+		t.Fatalf("Resume() error = %v", err)
+	}
+	if len(resumed.Messages) != 2 {
+		t.Fatalf("resumed messages = %#v, want both legacy messages", resumed.Messages)
+	}
+	if _, ok := resumed.LatestSelection(); ok {
+		t.Error("LatestSelection() on a legacy transcript = ok, want none")
+	}
+}
+
+func TestSessionResumeRejectsUnknownRecordType(t *testing.T) {
+	store, err := NewStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewStore() error = %v", err)
+	}
+	created, err := store.Create()
+	if err != nil {
+		t.Fatalf("Create() error = %v", err)
+	}
+	if err := os.WriteFile(created.Path(), []byte(`{"type":"future","future":{}}`+"\n"), 0o600); err != nil {
+		t.Fatalf("WriteFile() error = %v", err)
+	}
+	if _, err := store.Resume(created.ID); err == nil {
+		t.Fatal("expected error for an unknown transcript record type")
+	}
+}
