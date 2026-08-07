@@ -329,14 +329,23 @@ func (a *Agent) systemPrompt() (string, error) {
 }
 
 // runTool gates a single Tool Call behind Approval and executes it, returning
-// the normalized Tool Result content for the model.
+// the normalized Tool Result content for the model. The call's Command Report
+// is rendered before any Approval is sought; a call whose Report cannot be
+// rendered is refused without executing, never approved blindly.
 func (a *Agent) runTool(ctx context.Context, call provider.ToolCall) (string, error) {
 	declared, tierErr := a.tools.Tier(call.Name)
 	if tierErr != nil {
 		return "tool error: " + tierErr.Error(), nil
 	}
+	report, reportErr := a.tools.Report(call.Name, call.Arguments)
+	if reportErr != nil {
+		return "tool error: " + reportErr.Error(), nil
+	}
+	if strings.TrimSpace(report) == "" {
+		return fmt.Sprintf("tool error: the %s tool call has no Command Report; refusing to execute it", call.Name), nil
+	}
 	a.sink.Indicator(activity.AwaitingApproval)
-	decision, err := a.approval.Decide(ctx, call.Name, declared)
+	decision, err := a.approval.Decide(ctx, approval.Request{ToolName: call.Name, Declared: declared, Report: report})
 	if err != nil {
 		if contextErr := ctx.Err(); contextErr != nil {
 			return "", fmt.Errorf("approve tool %q: %w", call.Name, contextErr)

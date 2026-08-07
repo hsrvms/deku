@@ -25,9 +25,14 @@ import (
 
 // Tool is a model-invokable built-in capability. Tier declares the tool's
 // classification so the Approval gate can decide whether it runs unprompted.
+// Report renders the Command Report for a call: the concrete action the Tool
+// will take (the exact command, the Edit changes, or the Write path). Only the
+// Tool knows its concrete action, so only it can produce the Report. A call
+// whose Report cannot be rendered is refused before any Approval is sought.
 type Tool interface {
 	Definition() provider.ToolDefinition
 	Execute(context.Context, json.RawMessage) (string, error)
+	Report(json.RawMessage) (string, error)
 	Tier() approval.Tier
 }
 
@@ -198,6 +203,20 @@ func (r *Registry) Tier(name string) (approval.Tier, error) {
 	return tool.Tier(), nil
 }
 
+// Report renders the Command Report for a named tool call, or an error when
+// the call's concrete action cannot be rendered. The Agent refuses a call
+// whose Report cannot be produced rather than approving it blindly.
+func (r *Registry) Report(name string, arguments string) (string, error) {
+	if r == nil {
+		return "", errors.New("tool registry is nil")
+	}
+	tool, ok := r.tools[name]
+	if !ok {
+		return "", fmt.Errorf("unknown tool %q", name)
+	}
+	return tool.Report(json.RawMessage(arguments))
+}
+
 // Execute validates and runs a named tool. Tool failures are returned to the
 // Agent so it can normalize them into a Tool Result for the model.
 func (r *Registry) Execute(ctx context.Context, name string, arguments string) (string, error) {
@@ -333,6 +352,24 @@ type commandArguments struct {
 
 func (t *commandTool) Tier() approval.Tier { return approval.Destructive }
 
+func (t *commandTool) Report(raw json.RawMessage) (string, error) {
+	var arguments commandArguments
+	if err := decodeArguments(raw, &arguments); err != nil {
+		return "", fmt.Errorf("command arguments: %w", err)
+	}
+	if strings.TrimSpace(arguments.Command) == "" {
+		return "", errors.New("command is required")
+	}
+	if arguments.Timeout < 0 {
+		return "", errors.New("command timeout must be positive")
+	}
+	report := "Run: " + arguments.Command
+	if strings.TrimSpace(arguments.Dir) != "" {
+		report += " (in " + arguments.Dir + ")"
+	}
+	return report, nil
+}
+
 func (t *commandTool) Definition() provider.ToolDefinition {
 	return provider.ToolDefinition{
 		Type: "function",
@@ -454,6 +491,50 @@ type editArguments struct {
 
 func (t *editTool) Tier() approval.Tier { return approval.Write }
 
+func (t *editTool) Report(raw json.RawMessage) (string, error) {
+	var arguments editArguments
+	if err := decodeArguments(raw, &arguments); err != nil {
+		return "", fmt.Errorf("edit arguments: %w", err)
+	}
+	if strings.TrimSpace(arguments.Path) == "" {
+		return "", errors.New("path is required")
+	}
+	if len(arguments.Edits) == 0 {
+		return "", errors.New("edit requires at least one replacement")
+	}
+	for index, change := range arguments.Edits {
+		if strings.TrimSpace(change.OldText) == "" {
+			return "", fmt.Errorf("edit %d: oldText is required", index+1)
+		}
+	}
+	var builder strings.Builder
+	fmt.Fprintf(&builder, "Edit: %s", arguments.Path)
+	for index, change := range arguments.Edits {
+		if len(arguments.Edits) > 1 {
+			fmt.Fprintf(&builder, "\nChange %d:", index+1)
+		}
+		writeDiffBlock(&builder, change.OldText, "-")
+		writeDiffBlock(&builder, change.NewText, "+")
+	}
+	return builder.String(), nil
+}
+
+// writeDiffBlock appends the lines of text to the report prefixed with marker,
+// so an Edit's before and after content reads as a terminal-friendly diff
+// instead of escaped raw text. A trailing newline is not rendered as an empty
+// line, and empty text renders nothing.
+func writeDiffBlock(builder *strings.Builder, text, marker string) {
+	if text == "" {
+		return
+	}
+	for _, line := range strings.Split(strings.TrimSuffix(text, "\n"), "\n") {
+		builder.WriteByte('\n')
+		builder.WriteString(marker)
+		builder.WriteByte(' ')
+		builder.WriteString(line)
+	}
+}
+
 type writeTool struct {
 	filesystem *filesystem
 }
@@ -465,6 +546,21 @@ type writeArguments struct {
 }
 
 func (t *writeTool) Tier() approval.Tier { return approval.Write }
+
+func (t *writeTool) Report(raw json.RawMessage) (string, error) {
+	var arguments writeArguments
+	if err := decodeArguments(raw, &arguments); err != nil {
+		return "", fmt.Errorf("write arguments: %w", err)
+	}
+	if strings.TrimSpace(arguments.Path) == "" {
+		return "", errors.New("path is required")
+	}
+	report := "Write: " + arguments.Path
+	if arguments.Overwrite {
+		report += " (overwrite)"
+	}
+	return report, nil
+}
 
 func (t *writeTool) Definition() provider.ToolDefinition {
 	return provider.ToolDefinition{
@@ -528,9 +624,58 @@ func (t *writeTool) Execute(ctx context.Context, raw json.RawMessage) (string, e
 
 func (t *lsTool) Tier() approval.Tier { return approval.Read }
 
+func (t *lsTool) Report(raw json.RawMessage) (string, error) {
+	var arguments lsArguments
+	if err := decodeArguments(raw, &arguments); err != nil {
+		return "", fmt.Errorf("ls arguments: %w", err)
+	}
+	if strings.TrimSpace(arguments.Path) == "" {
+		return "List: repository root", nil
+	}
+	return "List: " + arguments.Path, nil
+}
+
 func (t *readTool) Tier() approval.Tier { return approval.Read }
 
+func (t *readTool) Report(raw json.RawMessage) (string, error) {
+	var arguments readArguments
+	if err := decodeArguments(raw, &arguments); err != nil {
+		return "", fmt.Errorf("read arguments: %w", err)
+	}
+	if strings.TrimSpace(arguments.Path) == "" {
+		return "", errors.New("path is required")
+	}
+	if (arguments.StartLine != nil && *arguments.StartLine < 1) || (arguments.EndLine != nil && *arguments.EndLine < 1) {
+		return "", errors.New("line numbers must be positive")
+	}
+	report := "Read: " + arguments.Path
+	switch {
+	case arguments.StartLine != nil && arguments.EndLine != nil:
+		report += fmt.Sprintf(" (lines %d-%d)", *arguments.StartLine, *arguments.EndLine)
+	case arguments.StartLine != nil:
+		report += fmt.Sprintf(" (from line %d)", *arguments.StartLine)
+	case arguments.EndLine != nil:
+		report += fmt.Sprintf(" (to line %d)", *arguments.EndLine)
+	}
+	return report, nil
+}
+
 func (t *grepTool) Tier() approval.Tier { return approval.Read }
+
+func (t *grepTool) Report(raw json.RawMessage) (string, error) {
+	var arguments grepArguments
+	if err := decodeArguments(raw, &arguments); err != nil {
+		return "", fmt.Errorf("grep arguments: %w", err)
+	}
+	if strings.TrimSpace(arguments.Pattern) == "" {
+		return "", errors.New("grep pattern is required")
+	}
+	report := "Search: " + arguments.Pattern
+	if strings.TrimSpace(arguments.Path) != "" {
+		report += " in " + arguments.Path
+	}
+	return report, nil
+}
 
 func (t *editTool) Definition() provider.ToolDefinition {
 	return provider.ToolDefinition{

@@ -4,10 +4,17 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"io"
 	"strings"
 	"testing"
 	"time"
 )
+
+// request builds a Decision Request carrying a rendered Command Report, as the
+// Agent would after asking the Tool to produce one.
+func request(toolName string, declared Tier, report string) Request {
+	return Request{ToolName: toolName, Declared: declared, Report: report}
+}
 
 func TestPolicyDefaults(t *testing.T) {
 	policy := DefaultPolicy()
@@ -79,10 +86,10 @@ func TestNewPolicyFromStringsBuildsValidPolicy(t *testing.T) {
 	}
 }
 
-func TestGateAutoApprovesReadTools(t *testing.T) {
+func TestGateAutoApprovesReadToolsWhileShowingReport(t *testing.T) {
 	var prompt bytes.Buffer
 	gate := NewGate(DefaultPolicy(), strings.NewReader(""), &prompt)
-	decision, err := gate.Decide(context.Background(), "read", Read)
+	decision, err := gate.Decide(context.Background(), request("read", Read, "Read: pkg/main.go"))
 	if err != nil {
 		t.Fatalf("Decide() error = %v", err)
 	}
@@ -92,15 +99,21 @@ func TestGateAutoApprovesReadTools(t *testing.T) {
 	if decision.Tier != Read {
 		t.Errorf("read decision tier = %q, want read", decision.Tier)
 	}
-	if prompt.Len() != 0 {
-		t.Errorf("read prompt = %q, want no prompt", prompt.String())
+	if prompt.Len() == 0 {
+		t.Error("read output = empty, want Command Report shown")
+	}
+	if !strings.Contains(prompt.String(), "Command Report:") || !strings.Contains(prompt.String(), "Read: pkg/main.go") {
+		t.Errorf("read output = %q, want Command Report", prompt.String())
+	}
+	if strings.Contains(prompt.String(), "Approve?") {
+		t.Errorf("read output = %q, want no y/n prompt for an auto-approved tool", prompt.String())
 	}
 }
 
-func TestGatePromptsAndApprovesWriteTool(t *testing.T) {
+func TestGatePromptsAndApprovesWriteToolWithReport(t *testing.T) {
 	var prompt bytes.Buffer
 	gate := NewGate(DefaultPolicy(), strings.NewReader("y\n"), &prompt)
-	decision, err := gate.Decide(context.Background(), "edit", Write)
+	decision, err := gate.Decide(context.Background(), request("edit", Write, "Edit: main.go\n  replace \"func main() {}\" with \"func run() {}\""))
 	if err != nil {
 		t.Fatalf("Decide() error = %v", err)
 	}
@@ -113,12 +126,15 @@ func TestGatePromptsAndApprovesWriteTool(t *testing.T) {
 	if !strings.Contains(prompt.String(), "Approve?") || !strings.Contains(prompt.String(), "edit") {
 		t.Errorf("write prompt = %q, want approval request for edit", prompt.String())
 	}
+	if !strings.Contains(prompt.String(), "Command Report:") || !strings.Contains(prompt.String(), `replace "func main() {}" with "func run() {}"`) {
+		t.Errorf("write prompt = %q, want Command Report before the decision", prompt.String())
+	}
 }
 
 func TestGatePromptsAndRejectsWriteTool(t *testing.T) {
 	var prompt bytes.Buffer
 	gate := NewGate(DefaultPolicy(), strings.NewReader("n\n"), &prompt)
-	decision, err := gate.Decide(context.Background(), "edit", Write)
+	decision, err := gate.Decide(context.Background(), request("edit", Write, "Edit: main.go"))
 	if err != nil {
 		t.Fatalf("Decide() error = %v", err)
 	}
@@ -130,7 +146,7 @@ func TestGatePromptsAndRejectsWriteTool(t *testing.T) {
 func TestGateWarnsAndPromptsDestructiveTool(t *testing.T) {
 	var prompt bytes.Buffer
 	gate := NewGate(DefaultPolicy(), strings.NewReader("y\n"), &prompt)
-	decision, err := gate.Decide(context.Background(), "command", Destructive)
+	decision, err := gate.Decide(context.Background(), request("command", Destructive, "Run: echo hello"))
 	if err != nil {
 		t.Fatalf("Decide() error = %v", err)
 	}
@@ -140,12 +156,65 @@ func TestGateWarnsAndPromptsDestructiveTool(t *testing.T) {
 	if !strings.Contains(prompt.String(), "WARNING") {
 		t.Errorf("destructive prompt = %q, want warning", prompt.String())
 	}
+	if !strings.Contains(prompt.String(), "Command Report:") || !strings.Contains(prompt.String(), "Run: echo hello") {
+		t.Errorf("destructive prompt = %q, want Command Report", prompt.String())
+	}
+}
+
+func TestIsTerminalDetectsOnlyCharacterDevices(t *testing.T) {
+	if isTerminal(&bytes.Buffer{}) {
+		t.Error("isTerminal(buffer) = true, want false")
+	}
+	if isTerminal(io.Discard) {
+		t.Error("isTerminal(io.Discard) = true, want false")
+	}
+}
+
+func TestGateStylesCommandReportForTerminalOutput(t *testing.T) {
+	gate := NewGate(DefaultPolicy(), strings.NewReader("y\n"), &bytes.Buffer{})
+	gate.color = true
+	message := gate.promptMessage(request("edit", Write, "Edit: main.go\n- old line\n+ new line"), Write)
+	if !strings.Contains(message, ansiCyan) {
+		t.Errorf("styled prompt = %q, want colored header", message)
+	}
+	if !strings.Contains(message, ansiRed+"- old line") || !strings.Contains(message, ansiGreen+"+ new line") {
+		t.Errorf("styled prompt = %q, want red removals and green additions", message)
+	}
+	if !strings.Contains(message, ansiBold+"Approve?") {
+		t.Errorf("styled prompt = %q, want bold decision question", message)
+	}
+	if !strings.Contains(message, ansiReset) {
+		t.Errorf("styled prompt = %q, want ANSI resets", message)
+	}
+}
+
+func TestGateRefusesBlankCommandReport(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		decl  Tier
+		reply string
+	}{
+		{name: "gated write", decl: Write, reply: "y\n"},
+		{name: "auto read", decl: Read, reply: ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var prompt bytes.Buffer
+			gate := NewGate(DefaultPolicy(), strings.NewReader(tc.reply), &prompt)
+			_, err := gate.Decide(context.Background(), request("edit", tc.decl, "   "))
+			if err == nil {
+				t.Fatal("Decide() error = nil, want refusal for a blank Command Report")
+			}
+			if prompt.Len() != 0 {
+				t.Errorf("output = %q, want no prompt for a refused call", prompt.String())
+			}
+		})
+	}
 }
 
 func TestGateRepromptsOnInvalidInput(t *testing.T) {
 	var prompt bytes.Buffer
 	gate := NewGate(DefaultPolicy(), strings.NewReader("maybe\nyes\n"), &prompt)
-	decision, err := gate.Decide(context.Background(), "edit", Write)
+	decision, err := gate.Decide(context.Background(), request("edit", Write, "Edit: main.go"))
 	if err != nil {
 		t.Fatalf("Decide() error = %v", err)
 	}
@@ -160,7 +229,7 @@ func TestGateRepromptsOnInvalidInput(t *testing.T) {
 func TestGateReportsEndOfInput(t *testing.T) {
 	var prompt bytes.Buffer
 	gate := NewGate(DefaultPolicy(), strings.NewReader(""), &prompt)
-	_, err := gate.Decide(context.Background(), "edit", Write)
+	_, err := gate.Decide(context.Background(), request("edit", Write, "Edit: main.go"))
 	if err == nil {
 		t.Fatal("Decide() error = nil, want end-of-input error")
 	}
@@ -171,7 +240,7 @@ func TestGateHonorsCancellation(t *testing.T) {
 	cancel()
 	var prompt bytes.Buffer
 	gate := NewGate(DefaultPolicy(), strings.NewReader("y\n"), &prompt)
-	_, err := gate.Decide(ctx, "edit", Write)
+	_, err := gate.Decide(ctx, request("edit", Write, "Edit: main.go"))
 	if err == nil {
 		t.Fatal("Decide() error = nil, want cancellation error")
 	}
@@ -186,7 +255,7 @@ func TestGateHandlesSequentialPromptsOnSharedReader(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
 	for i := 0; i < 2; i++ {
-		decision, err := gate.Decide(ctx, "edit", Write)
+		decision, err := gate.Decide(ctx, request("edit", Write, "Edit: main.go"))
 		if err != nil {
 			t.Fatalf("prompt %d: Decide() error = %v", i+1, err)
 		}
@@ -198,10 +267,10 @@ func TestGateHandlesSequentialPromptsOnSharedReader(t *testing.T) {
 
 func TestGateRejectsUnknownTierAndEmptyToolName(t *testing.T) {
 	gate := NewGate(DefaultPolicy(), strings.NewReader("y\n"), &bytes.Buffer{})
-	if _, err := gate.Decide(context.Background(), "edit", Tier("bogus")); err == nil {
+	if _, err := gate.Decide(context.Background(), request("edit", Tier("bogus"), "Edit: main.go")); err == nil {
 		t.Error("unknown declared tier = nil error, want error")
 	}
-	if _, err := gate.Decide(context.Background(), "", Read); err == nil {
+	if _, err := gate.Decide(context.Background(), request("", Read, "Read: main.go")); err == nil {
 		t.Error("empty tool name = nil error, want error")
 	}
 }
