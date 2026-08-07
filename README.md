@@ -54,42 +54,58 @@ Use the platform's equivalent checksum and archive tools where `sha256sum`, `tar
 
 ## Usage
 
-Configure an OpenAI-compatible Provider with a JSON file in the **Deku Home**
-directory or with environment variables:
+Configure Deku with JSON files under the **Deku Home** directory
+(`~/.deku/`). Configuration is split by risk into three optional modules — a
+missing module is simply absent:
+
+- `settings.json` — behavior: Approval overrides, Repository Map exclusions, Agent Commits.
+- `auth.json` — credentials: the Provider API key.
+- `models.json` — the non-secret Provider declaration: endpoint and model.
 
 ```sh
-mkdir -p ~/.deku && cat > ~/.deku/config.json <<'EOF'
+mkdir -p ~/.deku && cat > ~/.deku/models.json <<'EOF'
 {
-  "provider": {
-    "endpoint": "https://api.openai.com/v1",
-    "api_key": "your-api-key",
-    "model": "your-model"
-  }
+  "endpoint": "https://api.openai.com/v1",
+  "model": "gpt-4"
+}
+EOF
+cat > ~/.deku/auth.json <<'EOF'
+{
+  "api_key": "your-api-key"
 }
 EOF
 ```
 
-Configuration is resolved in Config Precedence order — built-in **defaults**,
-then the Deku Home **global** file, then the environment as the highest
-source. Every value in the file may reference the environment with Env
-Substitution: `${VAR}` resolves the variable, and `${VAR:-default}` falls back
-when it is unset or empty. A literal value overrides an environment
-placeholder, and a missing required value fails fast at startup:
+Secrets and endpoints can also live in a Deku Home `.env` file, auto-loaded at
+startup:
+
+```sh
+cat > ~/.deku/.env <<'EOF'
+DEKU_PROVIDER_ENDPOINT=https://api.openai.com/v1
+DEKU_PROVIDER_API_KEY=your-api-key
+DEKU_PROVIDER_MODEL=gpt-4
+EOF
+```
+
+Configuration is resolved in Config Precedence order — built-in **defaults**, then the Deku Home **modules**, then the environment as the highest source: real process environment variables win over the `.env` file, which wins over the module files. Every value in a module file may reference the environment with Env Substitution: `${VAR}` resolves the variable (from the process environment or the `.env` file), and `${VAR:-default}` falls back when it is unset or empty. A literal value overrides an environment placeholder, and a missing required value fails fast at startup:
 
 ```json
 {
-  "provider": {
-    "endpoint": "${DEKU_PROVIDER_ENDPOINT:-https://api.openai.com/v1}",
-    "api_key": "${OPENAI_API_KEY}",
-    "model": "${DEKU_PROVIDER_MODEL:-gpt-4}"
-  }
+  "endpoint": "${DEKU_PROVIDER_ENDPOINT:-https://api.openai.com/v1}",
+  "model": "${DEKU_PROVIDER_MODEL:-gpt-4}"
+}
+```
+
+```json
+{
+  "api_key": "${OPENAI_API_KEY}"
 }
 ```
 
 The provider endpoint, API key, and model are required; Deku refuses to start
 when any is missing. They can also be supplied directly to the environment as
 `DEKU_PROVIDER_ENDPOINT`, `DEKU_PROVIDER_API_KEY`, and `DEKU_PROVIDER_MODEL`,
-which take precedence over the file.
+which take precedence over the `.env` file and the module files.
 
 Start the interactive chat from a repository:
 
@@ -124,7 +140,7 @@ inside an existing file. The `command` tool runs a shell command in the
 repository and is classified as Destructive, so it always prompts with a
 warning before executing.
 
-You can override the default classification in `~/.deku/config.json`. Per-tool
+You can override the default classification in `~/.deku/settings.json`. Per-tool
 tier overrides change how a named tool is classified, and per-tier defaults
 change whether a tier runs unprompted (`auto`) or asks (`prompt`):
 
@@ -146,7 +162,7 @@ mechanical file discovery. The map shows file paths, not source code; the model
 must use `read` to obtain actual file contents before editing. The map is
 generated fresh on each Step and its size is bounded to stay within a token
 budget. It respects `.gitignore` and an additional exclusion policy declared in
-`~/.deku/config.json`:
+`~/.deku/settings.json`:
 
 ```json
 {
@@ -159,8 +175,8 @@ budget. It respects `.gitignore` and an additional exclusion policy declared in
 ## Git safety
 
 Deku can preserve a recoverable, attributable Git workflow. Agent Commits are
-opt-in and configured through `agent_commits.mode` in `~/.deku/config.json` (or
-the `DEKU_AGENT_COMMITS` environment variable):
+opt-in and configured through `agent_commits.mode` in `~/.deku/settings.json`
+(or the `DEKU_AGENT_COMMITS` environment variable):
 
 - `off` (default) — never create Agent Commits.
 - `ask` — ask before creating each Agent Commit after a completed Turn.

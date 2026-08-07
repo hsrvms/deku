@@ -331,4 +331,4 @@ The user's decision to load a Repository's Project Config and any project-local 
 
 ## Env Substitution
 
-The rule that a configuration value may reference the environment instead of holding a literal. A value of the form `${VAR}` is replaced with the value of the environment variable VAR; `${VAR:-default}` supplies a fallback when VAR is unset. A literal value always wins over a placeholder. The environment is a source of configuration values, not a separate precedence layer.
+The rule that a configuration value may reference the environment instead of holding a literal. A value of the form `${VAR}` is replaced with the value of the environment variable VAR; `${VAR:-default}` supplies a fallback when VAR is unset. A literal value always wins over a placeholder. The environment is a source of configuration values, not a separate precedence layer. Environment values are resolved from the real process environment first and, when absent, from the Deku Home `.env` file, so the process environment always wins over `.env`.

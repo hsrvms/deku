@@ -8,9 +8,11 @@ import (
 	"testing"
 )
 
-// writeGlobal writes a Deku Home config.json for the current test, pointing
-// $HOME at a fresh temporary directory that contains it.
-func writeGlobal(t *testing.T, body string) {
+// writeDekuHome writes Deku Home files (settings.json, auth.json,
+// models.json, .env) for the current test, pointing $HOME at a fresh
+// temporary directory that contains them all. An empty body skips that file,
+// so a missing module is simply absent.
+func writeDekuHome(t *testing.T, files map[string]string) {
 	t.Helper()
 	home := t.TempDir()
 	t.Setenv("HOME", home)
@@ -18,9 +20,30 @@ func writeGlobal(t *testing.T, body string) {
 	if err := os.MkdirAll(dekuDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(dekuDir, "config.json"), []byte(body), 0o644); err != nil {
-		t.Fatal(err)
+	for name, body := range files {
+		if body == "" {
+			continue
+		}
+		if err := os.WriteFile(filepath.Join(dekuDir, name), []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
 	}
+}
+
+// writeModules writes Deku Home module files, skipping empty bodies.
+func writeModules(t *testing.T, settings, auth, models string) {
+	t.Helper()
+	writeDekuHome(t, map[string]string{
+		"settings.json": settings,
+		"auth.json":     auth,
+		"models.json":   models,
+	})
+}
+
+// writeEnv writes a Deku Home .env file for the current test.
+func writeEnv(t *testing.T, body string) {
+	t.Helper()
+	writeDekuHome(t, map[string]string{".env": body})
 }
 
 func TestLoadValidatesRequiredFields(t *testing.T) {
@@ -77,13 +100,13 @@ func TestLoadFromEnvVars(t *testing.T) {
 	}
 }
 
-func TestLoadFromConfigFile(t *testing.T) {
-	writeGlobal(t, `{
-  "provider": {
-    "endpoint": "https://api.file.com/v1",
-    "api_key": "sk-file-key",
-    "model": "file-model"
-  }
+func TestLoadFromModuleFiles(t *testing.T) {
+	writeModules(t,
+		``,
+		`{ "api_key": "sk-file-key" }`,
+		`{
+  "endpoint": "https://api.file.com/v1",
+  "model": "file-model"
 }`)
 
 	cfg, err := Load()
@@ -101,13 +124,13 @@ func TestLoadFromConfigFile(t *testing.T) {
 	}
 }
 
-func TestEnvVarsOverrideConfigFile(t *testing.T) {
-	writeGlobal(t, `{
-  "provider": {
-    "endpoint": "https://api.file.com/v1",
-    "api_key": "sk-file-key",
-    "model": "file-model"
-  }
+func TestEnvVarsOverrideModuleFiles(t *testing.T) {
+	writeModules(t,
+		``,
+		`{ "api_key": "sk-file-key" }`,
+		`{
+  "endpoint": "https://api.file.com/v1",
+  "model": "file-model"
 }`)
 	t.Setenv("DEKU_PROVIDER_ENDPOINT", "https://api.env.com/v1")
 
@@ -115,7 +138,7 @@ func TestEnvVarsOverrideConfigFile(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	// Env var should win over file.
+	// Env var should win over the files.
 	if cfg.Provider.Endpoint != "https://api.env.com/v1" {
 		t.Errorf("endpoint = %q, want env override %q", cfg.Provider.Endpoint, "https://api.env.com/v1")
 	}
@@ -164,17 +187,50 @@ func TestLoadMissingModel(t *testing.T) {
 	}
 }
 
-func TestLoadApprovalOverridesFromConfigFile(t *testing.T) {
-	writeGlobal(t, `{
-  "provider": {
-    "endpoint": "https://api.file.com/v1",
-    "api_key": "sk-file-key",
-    "model": "file-model"
-  },
+func TestLoadRequiredErrorNamesTheModuleFile(t *testing.T) {
+	// endpoint and model come from models.json; the missing api_key error
+	// must point at auth.json, not at a generic config file.
+	writeModules(t,
+		``,
+		``,
+		`{
+  "endpoint": "https://api.file.com/v1",
+  "model": "file-model"
+}`)
+	_ = os.Unsetenv("DEKU_PROVIDER_API_KEY")
+
+	_, err := Load()
+	if err == nil {
+		t.Fatal("expected error for missing api key")
+	}
+	if !strings.Contains(err.Error(), "auth.json") {
+		t.Errorf("error = %q, want it to name auth.json", err)
+	}
+
+	// A missing endpoint must point at models.json.
+	writeModules(t, ``, `{ "api_key": "sk-file-key" }`, `{ "model": "file-model" }`)
+	_ = os.Unsetenv("DEKU_PROVIDER_ENDPOINT")
+	_, err = Load()
+	if err == nil {
+		t.Fatal("expected error for missing endpoint")
+	}
+	if !strings.Contains(err.Error(), "models.json") {
+		t.Errorf("error = %q, want it to name models.json", err)
+	}
+}
+
+func TestLoadApprovalOverridesFromSettings(t *testing.T) {
+	writeModules(t,
+		`{
   "approval": {
     "tools": { "edit": "destructive" },
     "defaults": { "read": "prompt", "write": "auto" }
   }
+}`,
+		`{ "api_key": "sk-file-key" }`,
+		`{
+  "endpoint": "https://api.file.com/v1",
+  "model": "file-model"
 }`)
 
 	cfg, err := Load()
@@ -192,16 +248,17 @@ func TestLoadApprovalOverridesFromConfigFile(t *testing.T) {
 	}
 }
 
-func TestLoadRepoMapExcludeFromConfigFile(t *testing.T) {
-	writeGlobal(t, `{
-  "provider": {
-    "endpoint": "https://api.file.com/v1",
-    "api_key": "sk-file-key",
-    "model": "file-model"
-  },
+func TestLoadRepoMapExcludeFromSettings(t *testing.T) {
+	writeModules(t,
+		`{
   "repo_map": {
     "exclude": ["vendor", "*.gen.go"]
   }
+}`,
+		`{ "api_key": "sk-file-key" }`,
+		`{
+  "endpoint": "https://api.file.com/v1",
+  "model": "file-model"
 }`)
 
 	cfg, err := Load()
@@ -222,7 +279,7 @@ func TestLoadNoConfigFileIsOk(t *testing.T) {
 
 	cfg, err := Load()
 	if err != nil {
-		t.Fatalf("unexpected error when config file is absent: %v", err)
+		t.Fatalf("unexpected error when no module files exist: %v", err)
 	}
 	if cfg.Provider.Endpoint != "https://api.example.com/v1" {
 		t.Errorf("endpoint = %q, want %q", cfg.Provider.Endpoint, "https://api.example.com/v1")
@@ -248,17 +305,18 @@ func TestAgentCommitsDefaults(t *testing.T) {
 	}
 }
 
-func TestAgentCommitsFromConfigFileAndEnv(t *testing.T) {
-	writeGlobal(t, `{
-  "provider": {
-    "endpoint": "https://api.file.com/v1",
-    "api_key": "sk-file-key",
-    "model": "file-model"
-  },
+func TestAgentCommitsFromSettingsAndEnv(t *testing.T) {
+	writeModules(t,
+		`{
   "agent_commits": {
     "mode": "ask",
     "validation": "make test"
   }
+}`,
+		`{ "api_key": "sk-file-key" }`,
+		`{
+  "endpoint": "https://api.file.com/v1",
+  "model": "file-model"
 }`)
 
 	cfg, err := Load()
@@ -266,13 +324,13 @@ func TestAgentCommitsFromConfigFileAndEnv(t *testing.T) {
 		t.Fatalf("Load() error = %v", err)
 	}
 	if cfg.AgentCommits.Mode != "ask" {
-		t.Errorf("agent_commits.mode = %q, want ask from file", cfg.AgentCommits.Mode)
+		t.Errorf("agent_commits.mode = %q, want ask from settings", cfg.AgentCommits.Mode)
 	}
 	if cfg.AgentCommits.Validation != "make test" {
-		t.Errorf("agent_commits.validation = %q, want make test from file", cfg.AgentCommits.Validation)
+		t.Errorf("agent_commits.validation = %q, want make test from settings", cfg.AgentCommits.Validation)
 	}
 
-	// Environment variable overrides the file mode.
+	// Environment variable overrides the settings mode.
 	t.Setenv("DEKU_AGENT_COMMITS", "on")
 	cfg, err = Load()
 	if err != nil {
@@ -284,26 +342,44 @@ func TestAgentCommitsFromConfigFileAndEnv(t *testing.T) {
 }
 
 func TestLoadInvalidJSONFails(t *testing.T) {
-	writeGlobal(t, `{ not valid json`)
+	writeModules(t, `{ not valid json`, ``, ``)
 
 	_, err := Load()
 	if err == nil {
-		t.Fatal("expected error for malformed config.json")
+		t.Fatal("expected error for malformed settings.json")
 	}
-	if !strings.Contains(err.Error(), "config.json") {
-		t.Errorf("error = %q, want it to name config.json", err)
+	if !strings.Contains(err.Error(), "settings.json") {
+		t.Errorf("error = %q, want it to name settings.json", err)
+	}
+
+	writeModules(t, ``, `{ not valid json`, ``)
+	_, err = Load()
+	if err == nil {
+		t.Fatal("expected error for malformed auth.json")
+	}
+	if !strings.Contains(err.Error(), "auth.json") {
+		t.Errorf("error = %q, want it to name auth.json", err)
+	}
+
+	writeModules(t, ``, ``, `{ not valid json`)
+	_, err = Load()
+	if err == nil {
+		t.Fatal("expected error for malformed models.json")
+	}
+	if !strings.Contains(err.Error(), "models.json") {
+		t.Errorf("error = %q, want it to name models.json", err)
 	}
 }
 
 // --- Issue #34 acceptance: Env Substitution and Config Precedence ---
 
 func TestPlaceholderResolvesFromEnvironment(t *testing.T) {
-	writeGlobal(t, `{
-  "provider": {
-    "endpoint": "${ENDPOINT}",
-    "api_key": "${API_KEY}",
-    "model": "${MODEL}"
-  }
+	writeModules(t,
+		``,
+		`{ "api_key": "${API_KEY}" }`,
+		`{
+  "endpoint": "${ENDPOINT}",
+  "model": "${MODEL}"
 }`)
 	t.Setenv("ENDPOINT", "https://api.example.com/v1")
 	t.Setenv("API_KEY", "sk-placeholder-key")
@@ -319,15 +395,18 @@ func TestPlaceholderResolvesFromEnvironment(t *testing.T) {
 	if cfg.Provider.Model != "placeholder-model" {
 		t.Errorf("model = %q, want env substitution", cfg.Provider.Model)
 	}
+	if cfg.Provider.APIKey != "sk-placeholder-key" {
+		t.Errorf("api_key = %q, want env substitution", cfg.Provider.APIKey)
+	}
 }
 
 func TestPlaceholderWithDefaultFallsBackWhenUnset(t *testing.T) {
-	writeGlobal(t, `{
-  "provider": {
-    "endpoint": "${DEKU_PROVIDER_ENDPOINT:-https://default.example.com/v1}",
-    "api_key": "${API_KEY:-sk-default-key}",
-    "model": "${MODEL:-default-model}"
-  }
+	writeModules(t,
+		``,
+		`{ "api_key": "${API_KEY:-sk-default-key}" }`,
+		`{
+  "endpoint": "${DEKU_PROVIDER_ENDPOINT:-https://default.example.com/v1}",
+  "model": "${MODEL:-default-model}"
 }`)
 	_ = os.Unsetenv("DEKU_PROVIDER_ENDPOINT")
 	_ = os.Unsetenv("API_KEY")
@@ -349,12 +428,12 @@ func TestPlaceholderWithDefaultFallsBackWhenUnset(t *testing.T) {
 }
 
 func TestPlaceholderWithDefaultPrefersEnvWhenSet(t *testing.T) {
-	writeGlobal(t, `{
-  "provider": {
-    "endpoint": "${ENDPOINT:-https://default.example.com/v1}",
-    "api_key": "${API_KEY:-sk-default-key}",
-    "model": "${MODEL:-default-model}"
-  }
+	writeModules(t,
+		``,
+		`{ "api_key": "${API_KEY:-sk-default-key}" }`,
+		`{
+  "endpoint": "${ENDPOINT:-https://default.example.com/v1}",
+  "model": "${MODEL:-default-model}"
 }`)
 	t.Setenv("ENDPOINT", "https://api.example.com/v1")
 	t.Setenv("API_KEY", "sk-env-key")
@@ -376,12 +455,12 @@ func TestPlaceholderWithDefaultPrefersEnvWhenSet(t *testing.T) {
 }
 
 func TestUnsetPlaceholderWithoutDefaultFails(t *testing.T) {
-	writeGlobal(t, `{
-  "provider": {
-    "endpoint": "${ENDPOINT}",
-    "api_key": "${API_KEY}",
-    "model": "file-model"
-  }
+	writeModules(t,
+		``,
+		`{ "api_key": "${API_KEY}" }`,
+		`{
+  "endpoint": "${ENDPOINT}",
+  "model": "file-model"
 }`)
 	_ = os.Unsetenv("ENDPOINT")
 	_ = os.Unsetenv("API_KEY")
@@ -396,15 +475,15 @@ func TestUnsetPlaceholderWithoutDefaultFails(t *testing.T) {
 }
 
 func TestLiteralOverridesEnvironmentPlaceholder(t *testing.T) {
-	// The global file leaves "model" to the environment via ${SOME_MODEL}.
+	// models.json leaves "model" to the environment via ${SOME_MODEL}.
 	// The environment-as-source layer (DEKU_PROVIDER_MODEL) pins a literal at
 	// higher precedence, so the literal overrides the placeholder.
-	writeGlobal(t, `{
-  "provider": {
-    "endpoint": "https://api.example.com/v1",
-    "api_key": "sk-file-key",
-    "model": "${SOME_MODEL}"
-  }
+	writeModules(t,
+		``,
+		`{ "api_key": "sk-file-key" }`,
+		`{
+  "endpoint": "https://api.example.com/v1",
+  "model": "${SOME_MODEL}"
 }`)
 	t.Setenv("SOME_MODEL", "placeholder-model")
 	t.Setenv("DEKU_PROVIDER_MODEL", "env-source-model")
@@ -419,14 +498,13 @@ func TestLiteralOverridesEnvironmentPlaceholder(t *testing.T) {
 }
 
 func TestConfigPrecedenceDefaultsGlobalEnv(t *testing.T) {
-	// agent_commits.mode: default "off" < global "ask" < env-as-source "on".
-	writeGlobal(t, `{
-  "provider": {
-    "endpoint": "https://api.example.com/v1",
-    "api_key": "sk-file-key",
-    "model": "file-model"
-  },
-  "agent_commits": { "mode": "ask" }
+	// agent_commits.mode: default "off" < settings "ask" < env-as-source "on".
+	writeModules(t,
+		`{ "agent_commits": { "mode": "ask" } }`,
+		`{ "api_key": "sk-file-key" }`,
+		`{
+  "endpoint": "https://api.file.com/v1",
+  "model": "file-model"
 }`)
 
 	cfg, err := Load()
@@ -434,7 +512,7 @@ func TestConfigPrecedenceDefaultsGlobalEnv(t *testing.T) {
 		t.Fatalf("Load() error = %v", err)
 	}
 	if cfg.AgentCommits.Mode != "ask" {
-		t.Errorf("mode = %q, want ask from global over default off", cfg.AgentCommits.Mode)
+		t.Errorf("mode = %q, want ask from settings over default off", cfg.AgentCommits.Mode)
 	}
 
 	t.Setenv("DEKU_AGENT_COMMITS", "on")
@@ -448,15 +526,14 @@ func TestConfigPrecedenceDefaultsGlobalEnv(t *testing.T) {
 }
 
 func TestReplacePerSectionGlobalOverridesDefault(t *testing.T) {
-	// The validation field has no global override, so the built-in default
-	// remains; when the global section sets it, the global value wins.
-	writeGlobal(t, `{
-  "provider": {
-    "endpoint": "https://api.example.com/v1",
-    "api_key": "sk-file-key",
-    "model": "file-model"
-  },
-  "agent_commits": { "validation": "make ci" }
+	// The validation field has no settings override, so the built-in default
+	// remains; when the settings section sets it, the settings value wins.
+	writeModules(t,
+		`{ "agent_commits": { "validation": "make ci" } }`,
+		`{ "api_key": "sk-file-key" }`,
+		`{
+  "endpoint": "https://api.file.com/v1",
+  "model": "file-model"
 }`)
 
 	cfg, err := Load()
@@ -464,6 +541,208 @@ func TestReplacePerSectionGlobalOverridesDefault(t *testing.T) {
 		t.Fatalf("Load() error = %v", err)
 	}
 	if cfg.AgentCommits.Validation != "make ci" {
-		t.Errorf("validation = %q, want make ci from global", cfg.AgentCommits.Validation)
+		t.Errorf("validation = %q, want make ci from settings", cfg.AgentCommits.Validation)
+	}
+}
+
+// --- Issue #36 acceptance: modular sections and Deku Home .env ---
+
+func TestMissingModulesAreSimplyAbsent(t *testing.T) {
+	// Only settings.json exists; models and auth are absent and the required
+	// values come from the environment-as-source layer.
+	writeModules(t,
+		`{ "agent_commits": { "mode": "ask" } }`,
+		``,
+		``)
+	t.Setenv("DEKU_PROVIDER_ENDPOINT", "https://api.example.com/v1")
+	t.Setenv("DEKU_PROVIDER_API_KEY", "sk-test-key")
+	t.Setenv("DEKU_PROVIDER_MODEL", "test-model")
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("unexpected error when models/auth modules are absent: %v", err)
+	}
+	if cfg.Provider.Endpoint != "https://api.example.com/v1" {
+		t.Errorf("endpoint = %q, want env value", cfg.Provider.Endpoint)
+	}
+	if cfg.AgentCommits.Mode != "ask" {
+		t.Errorf("agent_commits.mode = %q, want ask from settings", cfg.AgentCommits.Mode)
+	}
+}
+
+func TestSectionsReplaceAsAWhole(t *testing.T) {
+	// settings.json declares only the approval section. It replaces the
+	// settings section as a whole: fields absent from the file do not merge
+	// from any other source, and the other modules are independent sections.
+	writeModules(t,
+		`{ "approval": { "tools": { "edit": "destructive" } } }`,
+		`{ "api_key": "sk-file-key" }`,
+		`{
+  "endpoint": "https://api.file.com/v1",
+  "model": "file-model"
+}`)
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	if got := cfg.Approval.Tools["edit"]; got != "destructive" {
+		t.Errorf("approval.tools.edit = %q, want destructive", got)
+	}
+	// No field-by-field merging: approval.defaults is absent, not half-filled.
+	if cfg.Approval.Defaults != nil {
+		t.Errorf("approval.defaults = %#v, want nil (absent section field)", cfg.Approval.Defaults)
+	}
+	if cfg.RepoMap.Exclude != nil {
+		t.Errorf("repo_map.exclude = %#v, want nil (absent section)", cfg.RepoMap.Exclude)
+	}
+	// Built-in defaults still apply to the settings fields the file omits.
+	if cfg.AgentCommits.Mode != "off" {
+		t.Errorf("agent_commits.mode = %q, want built-in default off", cfg.AgentCommits.Mode)
+	}
+}
+
+func TestLoadFromDekuHomeEnvFile(t *testing.T) {
+	writeEnv(t, `# Deku Home environment
+DEKU_PROVIDER_ENDPOINT=https://api.envfile.com/v1
+DEKU_PROVIDER_API_KEY=sk-envfile-key
+DEKU_PROVIDER_MODEL=envfile-model
+`)
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if cfg.Provider.Endpoint != "https://api.envfile.com/v1" {
+		t.Errorf("endpoint = %q, want %q", cfg.Provider.Endpoint, "https://api.envfile.com/v1")
+	}
+	if cfg.Provider.APIKey != "sk-envfile-key" {
+		t.Errorf("api_key = %q, want %q", cfg.Provider.APIKey, "sk-envfile-key")
+	}
+	if cfg.Provider.Model != "envfile-model" {
+		t.Errorf("model = %q, want %q", cfg.Provider.Model, "envfile-model")
+	}
+}
+
+func TestProcessEnvWinsOverDekuHomeEnv(t *testing.T) {
+	writeEnv(t, `DEKU_PROVIDER_ENDPOINT=https://api.envfile.com/v1
+DEKU_PROVIDER_API_KEY=sk-envfile-key
+DEKU_PROVIDER_MODEL=envfile-model
+`)
+	t.Setenv("DEKU_PROVIDER_ENDPOINT", "https://api.process.com/v1")
+	t.Setenv("DEKU_PROVIDER_API_KEY", "sk-process-key")
+	t.Setenv("DEKU_PROVIDER_MODEL", "process-model")
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if cfg.Provider.Endpoint != "https://api.process.com/v1" {
+		t.Errorf("endpoint = %q, want process env to win over .env", cfg.Provider.Endpoint)
+	}
+	if cfg.Provider.APIKey != "sk-process-key" {
+		t.Errorf("api_key = %q, want process env to win over .env", cfg.Provider.APIKey)
+	}
+	if cfg.Provider.Model != "process-model" {
+		t.Errorf("model = %q, want process env to win over .env", cfg.Provider.Model)
+	}
+}
+
+func TestDekuHomeEnvWinsOverModuleFiles(t *testing.T) {
+	writeDekuHome(t, map[string]string{
+		"auth.json": `{ "api_key": "sk-file-key" }`,
+		"models.json": `{
+  "endpoint": "https://api.file.com/v1",
+  "model": "file-model"
+}`,
+		".env": `DEKU_PROVIDER_API_KEY=sk-envfile-key
+`,
+	})
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if cfg.Provider.APIKey != "sk-envfile-key" {
+		t.Errorf("api_key = %q, want .env to win over auth.json", cfg.Provider.APIKey)
+	}
+	// Values absent from .env still come from the module files.
+	if cfg.Provider.Endpoint != "https://api.file.com/v1" {
+		t.Errorf("endpoint = %q, want fallback to models.json", cfg.Provider.Endpoint)
+	}
+}
+
+func TestEnvFileFeedsSubstitution(t *testing.T) {
+	// auth.json references a variable defined only in the Deku Home .env.
+	writeDekuHome(t, map[string]string{
+		"auth.json": `{ "api_key": "${DEKU_API_KEY}" }`,
+		"models.json": `{
+  "endpoint": "${DEKU_ENDPOINT:-https://fallback.example.com/v1}",
+  "model": "envfile-model"
+}`,
+		".env": `DEKU_API_KEY=sk-substituted-key
+DEKU_ENDPOINT=https://api.substituted.com/v1
+`,
+	})
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if cfg.Provider.APIKey != "sk-substituted-key" {
+		t.Errorf("api_key = %q, want substitution from .env", cfg.Provider.APIKey)
+	}
+	if cfg.Provider.Endpoint != "https://api.substituted.com/v1" {
+		t.Errorf("endpoint = %q, want substitution from .env", cfg.Provider.Endpoint)
+	}
+}
+
+func TestProcessEnvWinsOverEnvFileInSubstitution(t *testing.T) {
+	writeDekuHome(t, map[string]string{
+		"auth.json":   `{ "api_key": "${DEKU_API_KEY}" }`,
+		"models.json": `{ "endpoint": "https://api.file.com/v1", "model": "file-model" }`,
+		".env": `DEKU_API_KEY=sk-envfile-key
+`,
+	})
+	t.Setenv("DEKU_API_KEY", "sk-process-key")
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if cfg.Provider.APIKey != "sk-process-key" {
+		t.Errorf("api_key = %q, want process env to win in substitution", cfg.Provider.APIKey)
+	}
+}
+
+func TestMalformedEnvFileFails(t *testing.T) {
+	writeEnv(t, `DEKU_PROVIDER_ENDPOINT=https://api.example.com/v1
+this line has no equals sign
+`)
+
+	_, err := Load()
+	if err == nil {
+		t.Fatal("expected error for malformed .env")
+	}
+	if !strings.Contains(err.Error(), ".env") {
+		t.Errorf("error = %q, want it to name .env", err)
+	}
+}
+
+func TestSettingsPlaceholderResolvesFromEnvFile(t *testing.T) {
+	writeDekuHome(t, map[string]string{
+		"settings.json": `{ "agent_commits": { "validation": "${VALIDATION_CMD}" } }`,
+		"auth.json":     `{ "api_key": "sk-file-key" }`,
+		"models.json":   `{ "endpoint": "https://api.file.com/v1", "model": "file-model" }`,
+		".env": `VALIDATION_CMD=make ci
+`,
+	})
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if cfg.AgentCommits.Validation != "make ci" {
+		t.Errorf("validation = %q, want substitution from .env in settings", cfg.AgentCommits.Validation)
 	}
 }
