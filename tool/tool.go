@@ -37,6 +37,7 @@ type Registry struct {
 	root      string
 	tools     map[string]Tool
 	touched   map[string]bool
+	changed   []string
 	touchedMu sync.Mutex
 }
 
@@ -66,6 +67,7 @@ func NewRegistry(root string) (*Registry, error) {
 		root:    absoluteRoot,
 		tools:   make(map[string]Tool),
 		touched: make(map[string]bool),
+		changed: make([]string, 0),
 	}
 	filesystem := &filesystem{root: absoluteRoot, touch: registry.recordTouch}
 	tools := []Tool{
@@ -133,10 +135,14 @@ func (r *Registry) ResetTouched() {
 	}
 	r.touchedMu.Lock()
 	r.touched = make(map[string]bool)
+	r.changed = make([]string, 0)
 	r.touchedMu.Unlock()
 }
 
-// recordTouch marks path as modified by the Agent during this Turn.
+// recordTouch marks path as modified by the Agent during this Turn. It records
+// the path both in the attribution set and in an ordered change log, so the
+// Agent can surface one change event per Edit or Write rather than only per
+// distinct path.
 func (r *Registry) recordTouch(path string) {
 	if r == nil {
 		return
@@ -144,7 +150,39 @@ func (r *Registry) recordTouch(path string) {
 	clean := filepath.ToSlash(filepath.Clean(path))
 	r.touchedMu.Lock()
 	r.touched[clean] = true
+	r.changed = append(r.changed, clean)
 	r.touchedMu.Unlock()
+}
+
+// ChangeCount returns how many successful mutations the Agent recorded during
+// the current Turn. The Agent snapshots it before a Tool Call and compares it
+// with ChangesSince to emit change events for exactly that Call.
+func (r *Registry) ChangeCount() int {
+	if r == nil {
+		return 0
+	}
+	r.touchedMu.Lock()
+	defer r.touchedMu.Unlock()
+	return len(r.changed)
+}
+
+// ChangesSince returns the ordered repository-relative paths of mutations
+// recorded from index n onward. Only success mutating tools (Edit and Write)
+// append to the log, so the returned paths are exactly the change events owed
+// since the snapshot at ChangeCount.
+func (r *Registry) ChangesSince(n int) []string {
+	if r == nil {
+		return nil
+	}
+	r.touchedMu.Lock()
+	defer r.touchedMu.Unlock()
+	if n < 0 {
+		n = 0
+	}
+	if n >= len(r.changed) {
+		return nil
+	}
+	return append([]string(nil), r.changed[n:]...)
 }
 
 // Tier returns the classification the named tool declares. The Agent uses it
