@@ -1,14 +1,18 @@
 // Package config loads configuration from modular JSON files under the Deku
-// Home directory, a Deku Home .env file, and the process environment,
-// applying Config Precedence (defaults < Deku Home modules <
-// environment-as-source) and Env Substitution (${VAR} / ${VAR:-default}) to
-// every value, and validating required fields at startup.
+// Home directory, a Repository's Project Config, a Deku Home .env file, and
+// the process environment, applying Config Precedence (defaults < Deku Home
+// modules < Project Config < environment-as-source) and Env Substitution
+// (${VAR} / ${VAR:-default}) to every value, and validating required fields at
+// startup.
 //
-// Configuration is split by risk into three optional modules: settings.json
-// (behavior), auth.json (credentials), and models.json (the non-secret
-// Provider declaration). A missing module is simply absent. The Deku Home
-// .env file is auto-loaded as a source of environment values for secrets and
-// endpoints; the real process environment always wins over it.
+// Configuration is split by risk into three optional modules per scope:
+// settings.json (behavior), auth.json (credentials), and models.json (the
+// non-secret Provider declaration). A missing module is simply absent. Project
+// Config lives in a .deku directory at the repository top level and is loaded
+// only after the user grants the project Trust; an untrusted project is
+// ignored entirely. The Deku Home .env file is auto-loaded as a source of
+// environment values for secrets and endpoints; the real process environment
+// always wins over it.
 package config
 
 import (
@@ -19,12 +23,16 @@ import (
 	"strings"
 )
 
-// Module file names under the Deku Home directory.
+// Module file names under the Deku Home directory or a Repository's .deku
+// directory (Project Config).
 const (
 	settingsModule = "settings.json"
 	authModule     = "auth.json"
 	modelsModule   = "models.json"
 	envFileName    = ".env"
+	// trustFileName is the Deku Home record of repositories whose Project
+	// Config the user has granted Trust.
+	trustFileName = "trusted_projects.json"
 )
 
 // Config holds all configuration for Deku.
@@ -93,6 +101,12 @@ type modelsFile struct {
 	Model    string `json:"model"`
 }
 
+// trustFile is the Project Trust record: the list of repository roots whose
+// Project Config is loaded. Trust is granted per exact repository root.
+type trustFile struct {
+	Projects []string `json:"projects"`
+}
+
 // These are the real process environment variables that form the
 // environment-as-source layer, the highest Config Precedence source.
 const (
@@ -107,17 +121,25 @@ const (
 type lookup func(string) (string, bool)
 
 // Load reads configuration from the Deku Home modules (settings.json,
-// auth.json, models.json), the Deku Home .env file, and the process
-// environment, resolving every value in Config Precedence order: built-in
-// defaults, then the Deku Home modules, then the environment as the
-// highest-precedence source. Values from the modules may be literals or Env
-// Substitution placeholders (${VAR} / ${VAR:-default}); a literal value
-// overrides an environment placeholder. Each module is a section replaced as
-// a whole; a missing module is simply absent.
+// auth.json, models.json), the Deku Home .env file, the process environment,
+// and — for a trusted Repository — its Project Config, resolving every value
+// in Config Precedence order: built-in defaults, then the Deku Home modules,
+// then Project Config, then the environment as the highest-precedence source.
+// Values from the modules may be literals or Env Substitution placeholders
+// (${VAR} / ${VAR:-default}); a literal value overrides an environment
+// placeholder. Each module is a section replaced as a whole by the next
+// higher-precedence scope that carries it; a missing module is simply absent.
+//
+// projectRoot is the top-level directory of the Repository ("" when the
+// process is not inside a Git repository, in which case there is no project
+// scope). Project Config is read only when the user has granted the project
+// Trust by listing its root in the Deku Home trust record; an untrusted
+// project's files are never read.
 //
 // Returns an error when a required value is missing, a placeholder references
-// an unset variable with no default, or a module or .env file is malformed.
-func Load() (*Config, error) {
+// an unset variable with no default, a module or .env file is malformed, or
+// the trust record is malformed.
+func Load(projectRoot string) (*Config, error) {
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return nil, err
@@ -130,17 +152,53 @@ func Load() (*Config, error) {
 	}
 	resolve := effectiveLookup(envFile)
 
-	var settings *settingsFile
-	if err := loadJSONFile(filepath.Join(dekuHome, settingsModule), &settings); err != nil {
+	globalSettings, err := loadModule[settingsFile](dekuHome, settingsModule)
+	if err != nil {
 		return nil, err
 	}
-	var auth *authFile
-	if err := loadJSONFile(filepath.Join(dekuHome, authModule), &auth); err != nil {
+	globalAuth, err := loadModule[authFile](dekuHome, authModule)
+	if err != nil {
 		return nil, err
 	}
-	var models *modelsFile
-	if err := loadJSONFile(filepath.Join(dekuHome, modelsModule), &models); err != nil {
+	globalModels, err := loadModule[modelsFile](dekuHome, modelsModule)
+	if err != nil {
 		return nil, err
+	}
+
+	// Project Config is gated by Project Trust: an untrusted project is
+	// ignored entirely, so its files are never read and cannot affect the
+	// session. A trusted project's modules replace the Deku Home modules of
+	// the same name as a whole.
+	settings := globalSettings
+	auth := globalAuth
+	models := globalModels
+	if projectRoot != "" {
+		absoluteRoot, err := filepath.Abs(projectRoot)
+		if err != nil {
+			return nil, fmt.Errorf("resolve project root: %w", err)
+		}
+		granted, err := trusted(dekuHome, absoluteRoot)
+		if err != nil {
+			return nil, err
+		}
+		if granted {
+			projectDir := filepath.Join(absoluteRoot, ".deku")
+			if projectSettings, err := loadModule[settingsFile](projectDir, settingsModule); err != nil {
+				return nil, err
+			} else if projectSettings != nil {
+				settings = projectSettings
+			}
+			if projectAuth, err := loadModule[authFile](projectDir, authModule); err != nil {
+				return nil, err
+			} else if projectAuth != nil {
+				auth = projectAuth
+			}
+			if projectModels, err := loadModule[modelsFile](projectDir, modelsModule); err != nil {
+				return nil, err
+			} else if projectModels != nil {
+				models = projectModels
+			}
+		}
 	}
 
 	cfg := &Config{}
@@ -161,6 +219,40 @@ func Load() (*Config, error) {
 		return nil, fmt.Errorf("configuration is incomplete: %s", strings.Join(errs, "; "))
 	}
 	return cfg, nil
+}
+
+// loadModule loads one optional module file named name from dir. An absent
+// file yields a nil module with no error; a malformed file yields an error
+// naming the file.
+func loadModule[T any](dir, name string) (*T, error) {
+	var m *T
+	if err := loadJSONFile(filepath.Join(dir, name), &m); err != nil {
+		return nil, err
+	}
+	return m, nil
+}
+
+// trusted reports whether the user has granted Trust to the project at root.
+// The decision is deterministic: a project is trusted only when its absolute,
+// cleaned path appears in the Deku Home trust record. An absent record trusts
+// nothing — an untrusted repository is never trusted by default. A malformed
+// record is an error so a broken gate fails fast instead of silently changing
+// the decision.
+func trusted(dekuHome, projectRoot string) (bool, error) {
+	record, err := loadModule[trustFile](dekuHome, trustFileName)
+	if err != nil {
+		return false, err
+	}
+	if record == nil {
+		return false, nil
+	}
+	target := filepath.Clean(projectRoot)
+	for _, project := range record.Projects {
+		if filepath.Clean(project) == target {
+			return true, nil
+		}
+	}
+	return false, nil
 }
 
 // effectiveLookup returns a lookup that consults the real process environment

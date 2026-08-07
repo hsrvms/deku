@@ -46,7 +46,14 @@ func run(args []string, input io.Reader, output, errorOutput io.Writer) int {
 		return 0
 	}
 
-	cfg, err := config.Load()
+	projectRoot, err := repository.Root(".")
+	if err != nil {
+		if writeErr := writeError(errorOutput, "deku: %v\n", err); writeErr != nil {
+			return 1
+		}
+		return 1
+	}
+	cfg, err := config.Load(projectRoot)
 	if err != nil {
 		if writeErr := writeError(errorOutput, "deku: %v\n", err); writeErr != nil {
 			return 1

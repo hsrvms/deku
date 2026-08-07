@@ -87,7 +87,7 @@ DEKU_PROVIDER_MODEL=gpt-4
 EOF
 ```
 
-Configuration is resolved in Config Precedence order — built-in **defaults**, then the Deku Home **modules**, then the environment as the highest source: real process environment variables win over the `.env` file, which wins over the module files. Every value in a module file may reference the environment with Env Substitution: `${VAR}` resolves the variable (from the process environment or the `.env` file), and `${VAR:-default}` falls back when it is unset or empty. A literal value overrides an environment placeholder, and a missing required value fails fast at startup:
+Configuration is resolved in Config Precedence order — built-in **defaults**, then the Deku Home **modules**, then the **Project Config** of the Repository you run Deku from, then the environment as the highest source: real process environment variables win over the `.env` file, which wins over the module files. Every value in a module file may reference the environment with Env Substitution: `${VAR}` resolves the variable (from the process environment or the `.env` file), and `${VAR:-default}` falls back when it is unset or empty. A literal value overrides an environment placeholder, and a missing required value fails fast at startup:
 
 ```json
 {
@@ -106,6 +106,35 @@ The provider endpoint, API key, and model are required; Deku refuses to start
 when any is missing. They can also be supplied directly to the environment as
 `DEKU_PROVIDER_ENDPOINT`, `DEKU_PROVIDER_API_KEY`, and `DEKU_PROVIDER_MODEL`,
 which take precedence over the `.env` file and the module files.
+
+### Project Config and Project Trust
+
+A Repository may carry project-scope configuration in the same three optional
+modules under a `.deku/` directory at the repository top level:
+
+- `.deku/settings.json` — behavior: Approval overrides, Repository Map exclusions, Agent Commits.
+- `.deku/auth.json` — credentials: the Provider API key.
+- `.deku/models.json` — the non-secret Provider declaration: endpoint and model.
+
+Project Config is loaded **only after you grant the project Trust**. Grant
+Trust by listing the repository's absolute path in `~/.deku/trusted_projects.json`:
+
+```json
+{
+  "projects": ["/path/to/repository"]
+}
+```
+
+An untrusted repository is ignored entirely: its configuration files are
+never read, so they cannot change your Approval policy or any other setting.
+The Trust decision is deterministic — a repository is trusted only when its
+absolute path matches a listed path exactly (after path cleaning); an absent
+or empty trust record trusts nothing.
+
+Under Config Precedence, a trusted project's module **replaces** the Deku Home
+module of the same name as a whole, rather than merging field-by-field: a
+field the project module omits falls back to the built-in default, not to the
+Deku Home value.
 
 Start the interactive chat from a repository:
 
