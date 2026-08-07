@@ -150,11 +150,22 @@ type Decision struct {
 	Approved bool
 }
 
+// Request describes one gated Tool Call awaiting an Approval decision. It
+// carries the Tool name, the tier the Tool declares, and the rendered Command
+// Report: the concrete action the call will take (the exact command, the Edit
+// changes, or the Write path). Approval is never sought for a call without a
+// rendered Report, so a decision is never given blindly.
+type Request struct {
+	ToolName string
+	Declared Tier
+	Report   string
+}
+
 // Decider is the synchronous approval gate the Agent relies on. Decide reports
 // whether a tool call may proceed; it blocks until the user responds when the
 // tool's effective tier requires Approval.
 type Decider interface {
-	Decide(ctx context.Context, toolName string, declared Tier) (Decision, error)
+	Decide(ctx context.Context, request Request) (Decision, error)
 }
 
 // Gate is the built-in Decider that prompts the user in the terminal. It holds
@@ -182,31 +193,39 @@ func NewGate(policy Policy, input io.Reader, output io.Writer) *Gate {
 var _ Decider = (*Gate)(nil)
 
 // Decide applies the policy to a tool call and, when the effective tier
-// requires prompting, asks the user to approve or reject before returning.
-func (g *Gate) Decide(ctx context.Context, toolName string, declared Tier) (Decision, error) {
+// requires prompting, asks the user to approve or reject before returning. The
+// call's Command Report is displayed in both cases; a call without a rendered
+// Report is refused rather than approved blindly.
+func (g *Gate) Decide(ctx context.Context, request Request) (Decision, error) {
 	if g == nil {
 		return Decision{}, errors.New("approval gate is nil")
 	}
 	if ctx == nil {
 		return Decision{}, errors.New("approval context is nil")
 	}
-	if strings.TrimSpace(toolName) == "" {
+	if strings.TrimSpace(request.ToolName) == "" {
 		return Decision{}, errors.New("approval tool name is required")
 	}
-	if !declared.Valid() {
-		return Decision{}, fmt.Errorf("tool %q declares unknown tier %q", toolName, declared)
+	if !request.Declared.Valid() {
+		return Decision{}, fmt.Errorf("tool %q declares unknown tier %q", request.ToolName, request.Declared)
 	}
-	tier := g.policy.EffectiveTier(declared, toolName)
+	if strings.TrimSpace(request.Report) == "" {
+		return Decision{}, fmt.Errorf("tool %q has no Command Report; refusing to approve blindly", request.ToolName)
+	}
+	tier := g.policy.EffectiveTier(request.Declared, request.ToolName)
 	if g.policy.Action(tier) == Auto {
+		if err := g.displayReport(request.ToolName, tier, request.Report); err != nil {
+			return Decision{}, err
+		}
 		return Decision{Tier: tier, Approved: true}, nil
 	}
-	return g.prompt(ctx, toolName, tier)
+	return g.prompt(ctx, request, tier)
 }
 
 // prompt requests a synchronous y/n decision from the user, re-prompting on
 // unparseable input and honoring context cancellation.
-func (g *Gate) prompt(ctx context.Context, toolName string, tier Tier) (Decision, error) {
-	message := g.promptMessage(toolName, tier)
+func (g *Gate) prompt(ctx context.Context, request Request, tier Tier) (Decision, error) {
+	message := g.promptMessage(request, tier)
 	if _, err := io.WriteString(g.output, message); err != nil {
 		return Decision{}, fmt.Errorf("display approval prompt: %w", err)
 	}
@@ -267,10 +286,37 @@ func (g *Gate) readLine(ctx context.Context) (string, error) {
 	}
 }
 
-// promptMessage renders the user-facing request for a gated tool call.
-func (g *Gate) promptMessage(toolName string, tier Tier) string {
-	if tier == Destructive {
-		return fmt.Sprintf("WARNING: the %s tool is destructive. Approve? [y/n] ", toolName)
+// displayReport shows the Command Report of an auto-approved call without a
+// decision prompt, so Read Tools stay efficient without losing visibility.
+func (g *Gate) displayReport(toolName string, tier Tier, report string) error {
+	if _, err := io.WriteString(g.output, reportMessage(toolName, tier, report)); err != nil {
+		return fmt.Errorf("display command report: %w", err)
 	}
-	return fmt.Sprintf("The %s tool is classified as %s. Approve? [y/n] ", toolName, tier)
+	return nil
+}
+
+// promptMessage renders the user-facing request for a gated tool call: the
+// tier line, the Command Report, and the y/n decision.
+func (g *Gate) promptMessage(request Request, tier Tier) string {
+	var builder strings.Builder
+	if tier == Destructive {
+		builder.WriteString("WARNING: ")
+	}
+	builder.WriteString(reportMessage(request.ToolName, tier, request.Report))
+	builder.WriteString("Approve? [y/n] ")
+	return builder.String()
+}
+
+// reportMessage renders the Command Report block for a tool call: the tool
+// name and its effective tier, followed by the indented Report lines.
+func reportMessage(toolName string, tier Tier, report string) string {
+	var builder strings.Builder
+	fmt.Fprintf(&builder, "The %s tool is classified as %s.\n", toolName, tier)
+	builder.WriteString("Command Report:\n")
+	for _, line := range strings.Split(strings.TrimSuffix(report, "\n"), "\n") {
+		builder.WriteString("  ")
+		builder.WriteString(line)
+		builder.WriteByte('\n')
+	}
+	return builder.String()
 }

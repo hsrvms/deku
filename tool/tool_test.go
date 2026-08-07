@@ -188,6 +188,74 @@ func TestEditToolRejectsEmptyEditsAndPathTraversal(t *testing.T) {
 	}
 }
 
+func TestRegistryRendersCommandReports(t *testing.T) {
+	registry, err := NewRegistry(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewRegistry() error = %v", err)
+	}
+	cases := []struct {
+		name string
+		tool string
+		args string
+		want string
+	}{
+		{name: "command", tool: "command", args: `{"command":"go test ./..."}`, want: "Run: go test ./..."},
+		{name: "command with dir", tool: "command", args: `{"command":"make build","dir":"pkg"}`, want: "Run: make build (in pkg)"},
+		{name: "edit", tool: "edit", args: `{"path":"main.go","edits":[{"oldText":"func main() {}","newText":"func run() {}"}]}`, want: "Edit: main.go\n  replace \"func main() {}\" with \"func run() {}\""},
+		{name: "write", tool: "write", args: `{"path":"notes.txt","content":"hello"}`, want: "Write: notes.txt"},
+		{name: "write overwrite", tool: "write", args: `{"path":"main.go","content":"x","overwrite":true}`, want: "Write: main.go (overwrite)"},
+		{name: "read", tool: "read", args: `{"path":"main.go"}`, want: "Read: main.go"},
+		{name: "read line range", tool: "read", args: `{"path":"main.go","start_line":3,"end_line":5}`, want: "Read: main.go (lines 3-5)"},
+		{name: "read start line only", tool: "read", args: `{"path":"main.go","start_line":3}`, want: "Read: main.go (from line 3)"},
+		{name: "ls", tool: "ls", args: `{"path":"pkg"}`, want: "List: pkg"},
+		{name: "ls root", tool: "ls", args: `{}`, want: "List: repository root"},
+		{name: "grep", tool: "grep", args: `{"pattern":"TODO","path":"pkg"}`, want: "Search: TODO in pkg"},
+		{name: "grep without path", tool: "grep", args: `{"pattern":"TODO"}`, want: "Search: TODO"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := registry.Report(tc.tool, tc.args)
+			if err != nil {
+				t.Fatalf("Report(%q) error = %v", tc.tool, err)
+			}
+			if got != tc.want {
+				t.Errorf("Report(%q) = %q, want %q", tc.tool, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestRegistryRefusesUnrenderableCommandReports(t *testing.T) {
+	registry, err := NewRegistry(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewRegistry() error = %v", err)
+	}
+	cases := []struct {
+		name string
+		tool string
+		args string
+	}{
+		{name: "unknown tool", tool: "unknown", args: `{}`},
+		{name: "command without command", tool: "command", args: `{"dir":"pkg"}`},
+		{name: "command malformed arguments", tool: "command", args: `{"command":42}`},
+		{name: "command negative timeout", tool: "command", args: `{"command":"ls","timeout":-1}`},
+		{name: "edit without edits", tool: "edit", args: `{"path":"main.go"}`},
+		{name: "edit empty oldText", tool: "edit", args: `{"path":"main.go","edits":[{"oldText":"","newText":"x"}]}`},
+		{name: "edit without path", tool: "edit", args: `{"edits":[{"oldText":"a","newText":"b"}]}`},
+		{name: "write without path", tool: "write", args: `{"content":"x"}`},
+		{name: "read without path", tool: "read", args: `{}`},
+		{name: "read negative start line", tool: "read", args: `{"path":"main.go","start_line":0}`},
+		{name: "grep without pattern", tool: "grep", args: `{"path":"pkg"}`},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if _, err := registry.Report(tc.tool, tc.args); err == nil {
+				t.Errorf("Report(%q, %s) error = nil, want error", tc.tool, tc.args)
+			}
+		})
+	}
+}
+
 func TestRegistryDeclaresToolTiers(t *testing.T) {
 	registry, err := NewRegistry(t.TempDir())
 	if err != nil {

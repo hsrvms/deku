@@ -516,6 +516,150 @@ func TestAgentRejectsCommandToolCallOnDenial(t *testing.T) {
 	}
 }
 
+func TestAgentShowsCommandReportBeforeApprovalDecision(t *testing.T) {
+	root := t.TempDir()
+	file := filepath.Join(root, "main.go")
+	if err := os.WriteFile(file, []byte("package main\n\nfunc main() {}\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	registry, err := tool.NewRegistry(root)
+	if err != nil {
+		t.Fatalf("NewRegistry() error = %v", err)
+	}
+	store, err := session.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewStore() error = %v", err)
+	}
+	conversation, err := store.Create()
+	if err != nil {
+		t.Fatalf("Create() error = %v", err)
+	}
+	providerStub := &continuationProvider{
+		responses: [][]provider.Event{
+			{provider.ToolCall{ID: "call-1", Name: "edit", Arguments: `{"path":"main.go","edits":[{"oldText":"func main() {}","newText":"func run() {}"}]}`}, provider.Done{}},
+			{provider.TextDelta{Text: "Applied the approved edit."}, provider.Done{}},
+		},
+	}
+	var output bytes.Buffer
+	runner := NewWithTools(providerStub, "test-model", conversation, &output, strings.NewReader("y\n"), registry)
+
+	result, err := runner.Turn(context.Background(), "Rename main to run.")
+	if err != nil {
+		t.Fatalf("Turn() error = %v", err)
+	}
+	if result.Response != "Applied the approved edit." {
+		t.Errorf("response = %q, want final response", result.Response)
+	}
+	rendered := output.String()
+	report := `replace "func main() {}" with "func run() {}"`
+	if !strings.Contains(rendered, "Command Report:") || !strings.Contains(rendered, report) {
+		t.Errorf("output = %q, want Command Report shown at the Approval point", rendered)
+	}
+	if strings.Index(rendered, report) >= strings.Index(rendered, "Approve?") {
+		t.Errorf("output = %q, want Command Report before the y/n decision", rendered)
+	}
+	got, err := os.ReadFile(file)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != "package main\n\nfunc run() {}\n" {
+		t.Errorf("file after approved edit = %q, want func run()", got)
+	}
+}
+
+func TestAgentAutoApprovesReadToolWhileShowingReport(t *testing.T) {
+	root := t.TempDir()
+	file := filepath.Join(root, "main.go")
+	if err := os.WriteFile(file, []byte("package main\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	registry, err := tool.NewRegistry(root)
+	if err != nil {
+		t.Fatalf("NewRegistry() error = %v", err)
+	}
+	store, err := session.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewStore() error = %v", err)
+	}
+	conversation, err := store.Create()
+	if err != nil {
+		t.Fatalf("Create() error = %v", err)
+	}
+	providerStub := &continuationProvider{
+		responses: [][]provider.Event{
+			{provider.ToolCall{ID: "call-1", Name: "read", Arguments: `{"path":"main.go"}`}, provider.Done{}},
+			{provider.TextDelta{Text: "Read it."}, provider.Done{}},
+		},
+	}
+	var output bytes.Buffer
+	runner := NewWithTools(providerStub, "test-model", conversation, &output, strings.NewReader(""), registry)
+
+	result, err := runner.Turn(context.Background(), "Read main.go.")
+	if err != nil {
+		t.Fatalf("Turn() error = %v", err)
+	}
+	if result.Response != "Read it." {
+		t.Errorf("response = %q, want final response", result.Response)
+	}
+	rendered := output.String()
+	if !strings.Contains(rendered, "Command Report:") || !strings.Contains(rendered, "Read: main.go") {
+		t.Errorf("output = %q, want Read Command Report shown", rendered)
+	}
+	if strings.Contains(rendered, "Approve?") {
+		t.Errorf("output = %q, want no y/n prompt for an auto-approved Read Tool", rendered)
+	}
+	toolResult := conversation.Messages[2]
+	if toolResult.Role != session.RoleTool || toolResult.Content != "package main\n" {
+		t.Errorf("read tool result = %#v, want file content", toolResult)
+	}
+}
+
+func TestAgentRefusesToolCallWithoutRenderableReport(t *testing.T) {
+	root := t.TempDir()
+	registry, err := tool.NewRegistry(root)
+	if err != nil {
+		t.Fatalf("NewRegistry() error = %v", err)
+	}
+	store, err := session.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewStore() error = %v", err)
+	}
+	conversation, err := store.Create()
+	if err != nil {
+		t.Fatalf("Create() error = %v", err)
+	}
+	providerStub := &continuationProvider{
+		responses: [][]provider.Event{
+			{provider.ToolCall{ID: "call-1", Name: "write", Arguments: `{"content":"hello"}`}, provider.Done{}},
+			{provider.TextDelta{Text: "The write was refused."}, provider.Done{}},
+		},
+	}
+	var output bytes.Buffer
+	runner := NewWithTools(providerStub, "test-model", conversation, &output, strings.NewReader("y\n"), registry)
+
+	result, err := runner.Turn(context.Background(), "Write a file.")
+	if err != nil {
+		t.Fatalf("Turn() error = %v", err)
+	}
+	if result.Response != "The write was refused." {
+		t.Errorf("response = %q, want final response", result.Response)
+	}
+	if strings.Contains(output.String(), "Approve?") {
+		t.Errorf("output = %q, want no approval prompt for a refused call", output.String())
+	}
+	entries, err := os.ReadDir(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 0 {
+		t.Errorf("refused write created files: %v", entries)
+	}
+	toolResult := conversation.Messages[2]
+	if toolResult.Role != session.RoleTool || !strings.Contains(toolResult.Content, "tool error") {
+		t.Errorf("refused tool result = %#v, want refusal reported to the model", toolResult)
+	}
+}
+
 func TestAgentInjectsFreshRepositoryMapIntoEveryStep(t *testing.T) {
 	root := t.TempDir()
 	if err := os.WriteFile(filepath.Join(root, "main.go"), []byte("package main\n"), 0o600); err != nil {
