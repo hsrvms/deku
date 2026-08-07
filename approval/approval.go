@@ -176,10 +176,13 @@ type Gate struct {
 	input  io.Reader
 	output io.Writer
 	br     *bufio.Reader
+	color  bool
 }
 
 // NewGate constructs a Gate that prompts the user. A nil input defaults to
-// standard input; a nil output discards the prompt.
+// standard input; a nil output discards the prompt. The Command Report is
+// styled with color only when output is a terminal, so captured or piped
+// output stays plain.
 func NewGate(policy Policy, input io.Reader, output io.Writer) *Gate {
 	if input == nil {
 		input = os.Stdin
@@ -187,7 +190,7 @@ func NewGate(policy Policy, input io.Reader, output io.Writer) *Gate {
 	if output == nil {
 		output = io.Discard
 	}
-	return &Gate{policy: policy, input: input, output: output}
+	return &Gate{policy: policy, input: input, output: output, color: isTerminal(output)}
 }
 
 var _ Decider = (*Gate)(nil)
@@ -289,7 +292,7 @@ func (g *Gate) readLine(ctx context.Context) (string, error) {
 // displayReport shows the Command Report of an auto-approved call without a
 // decision prompt, so Read Tools stay efficient without losing visibility.
 func (g *Gate) displayReport(toolName string, tier Tier, report string) error {
-	if _, err := io.WriteString(g.output, reportMessage(toolName, tier, report)); err != nil {
+	if _, err := io.WriteString(g.output, g.reportMessage(toolName, tier, report)); err != nil {
 		return fmt.Errorf("display command report: %w", err)
 	}
 	return nil
@@ -300,23 +303,82 @@ func (g *Gate) displayReport(toolName string, tier Tier, report string) error {
 func (g *Gate) promptMessage(request Request, tier Tier) string {
 	var builder strings.Builder
 	if tier == Destructive {
+		if g.color {
+			builder.WriteString(ansiRed)
+			builder.WriteString(ansiBold)
+		}
 		builder.WriteString("WARNING: ")
+		if g.color {
+			builder.WriteString(ansiReset)
+		}
 	}
-	builder.WriteString(reportMessage(request.ToolName, tier, request.Report))
+	builder.WriteString(g.reportMessage(request.ToolName, tier, request.Report))
+	if g.color {
+		builder.WriteString(ansiBold)
+	}
 	builder.WriteString("Approve? [y/n] ")
+	if g.color {
+		builder.WriteString(ansiReset)
+	}
 	return builder.String()
 }
 
 // reportMessage renders the Command Report block for a tool call: the tool
-// name and its effective tier, followed by the indented Report lines.
-func reportMessage(toolName string, tier Tier, report string) string {
+// name and its effective tier, followed by the indented Report lines. When the
+// output is a terminal, the header is colored and diff lines are red for
+// removals (-) and green for additions (+), so a multi-line Report scans like
+// code instead of raw text.
+func (g *Gate) reportMessage(toolName string, tier Tier, report string) string {
 	var builder strings.Builder
 	fmt.Fprintf(&builder, "The %s tool is classified as %s.\n", toolName, tier)
-	builder.WriteString("Command Report:\n")
+	if g.color {
+		builder.WriteString(ansiCyan)
+	}
+	builder.WriteString("Command Report:")
+	if g.color {
+		builder.WriteString(ansiReset)
+	}
+	builder.WriteByte('\n')
 	for _, line := range strings.Split(strings.TrimSuffix(report, "\n"), "\n") {
 		builder.WriteString("  ")
+		if g.color {
+			switch {
+			case strings.HasPrefix(line, "-"):
+				builder.WriteString(ansiRed)
+			case strings.HasPrefix(line, "+"):
+				builder.WriteString(ansiGreen)
+			}
+		}
 		builder.WriteString(line)
+		if g.color {
+			builder.WriteString(ansiReset)
+		}
 		builder.WriteByte('\n')
 	}
 	return builder.String()
+}
+
+// ANSI escape sequences styling the Command Report when output is a terminal.
+// Reports stay plain when output is captured or piped.
+const (
+	ansiReset = "\x1b[0m"
+	ansiBold  = "\x1b[1m"
+	ansiRed   = "\x1b[31m"
+	ansiGreen = "\x1b[32m"
+	ansiCyan  = "\x1b[36m"
+)
+
+// isTerminal reports whether w is a terminal character device. The Gate styles
+// its Command Report only for a terminal so captured or piped output stays
+// plain.
+func isTerminal(w io.Writer) bool {
+	file, ok := w.(*os.File)
+	if !ok {
+		return false
+	}
+	info, err := file.Stat()
+	if err != nil {
+		return false
+	}
+	return info.Mode()&os.ModeCharDevice != 0
 }

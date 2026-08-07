@@ -14,7 +14,6 @@ import (
 	"path/filepath"
 	"regexp"
 	"sort"
-	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -510,13 +509,30 @@ func (t *editTool) Report(raw json.RawMessage) (string, error) {
 	}
 	var builder strings.Builder
 	fmt.Fprintf(&builder, "Edit: %s", arguments.Path)
-	for _, change := range arguments.Edits {
-		builder.WriteString("\n  replace ")
-		builder.WriteString(strconv.Quote(change.OldText))
-		builder.WriteString(" with ")
-		builder.WriteString(strconv.Quote(change.NewText))
+	for index, change := range arguments.Edits {
+		if len(arguments.Edits) > 1 {
+			fmt.Fprintf(&builder, "\nChange %d:", index+1)
+		}
+		writeDiffBlock(&builder, change.OldText, "-")
+		writeDiffBlock(&builder, change.NewText, "+")
 	}
 	return builder.String(), nil
+}
+
+// writeDiffBlock appends the lines of text to the report prefixed with marker,
+// so an Edit's before and after content reads as a terminal-friendly diff
+// instead of escaped raw text. A trailing newline is not rendered as an empty
+// line, and empty text renders nothing.
+func writeDiffBlock(builder *strings.Builder, text, marker string) {
+	if text == "" {
+		return
+	}
+	for _, line := range strings.Split(strings.TrimSuffix(text, "\n"), "\n") {
+		builder.WriteByte('\n')
+		builder.WriteString(marker)
+		builder.WriteByte(' ')
+		builder.WriteString(line)
+	}
 }
 
 type writeTool struct {

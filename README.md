@@ -132,9 +132,10 @@ arrives; tool calls and results are retained in the append-only Session
 transcript.
 
 Before any Tool Call executes, Deku shows a **Command Report** of the concrete
-action — the exact `command`, the specific Edit changes, or the `write` path —
-so you approve an action, not a Tool name. Read-only tools (`ls`, `read`,
-`grep`) run without a prompt but still show their Report. Mutating tools
+action — the exact `command`, the specific Edit changes (rendered as a
+green/red diff), or the `write` path — so you approve an action, not a Tool
+name. Read-only tools (`ls`, `read`, `grep`) run without a prompt but still
+show their Report. Mutating tools
 (`write`, `edit`) pause and show the Report, then ask you to approve (`y`) or
 reject (`n`) before running; a rejection is reported back to the model and the
 tool does not execute. `write` creates a new file, fills an empty file, or—when

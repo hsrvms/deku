@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"io"
 	"strings"
 	"testing"
 	"time"
@@ -157,6 +158,33 @@ func TestGateWarnsAndPromptsDestructiveTool(t *testing.T) {
 	}
 	if !strings.Contains(prompt.String(), "Command Report:") || !strings.Contains(prompt.String(), "Run: echo hello") {
 		t.Errorf("destructive prompt = %q, want Command Report", prompt.String())
+	}
+}
+
+func TestIsTerminalDetectsOnlyCharacterDevices(t *testing.T) {
+	if isTerminal(&bytes.Buffer{}) {
+		t.Error("isTerminal(buffer) = true, want false")
+	}
+	if isTerminal(io.Discard) {
+		t.Error("isTerminal(io.Discard) = true, want false")
+	}
+}
+
+func TestGateStylesCommandReportForTerminalOutput(t *testing.T) {
+	gate := NewGate(DefaultPolicy(), strings.NewReader("y\n"), &bytes.Buffer{})
+	gate.color = true
+	message := gate.promptMessage(request("edit", Write, "Edit: main.go\n- old line\n+ new line"), Write)
+	if !strings.Contains(message, ansiCyan) {
+		t.Errorf("styled prompt = %q, want colored header", message)
+	}
+	if !strings.Contains(message, ansiRed+"- old line") || !strings.Contains(message, ansiGreen+"+ new line") {
+		t.Errorf("styled prompt = %q, want red removals and green additions", message)
+	}
+	if !strings.Contains(message, ansiBold+"Approve?") {
+		t.Errorf("styled prompt = %q, want bold decision question", message)
+	}
+	if !strings.Contains(message, ansiReset) {
+		t.Errorf("styled prompt = %q, want ANSI resets", message)
 	}
 }
 

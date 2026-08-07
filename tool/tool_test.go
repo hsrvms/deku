@@ -201,7 +201,11 @@ func TestRegistryRendersCommandReports(t *testing.T) {
 	}{
 		{name: "command", tool: "command", args: `{"command":"go test ./..."}`, want: "Run: go test ./..."},
 		{name: "command with dir", tool: "command", args: `{"command":"make build","dir":"pkg"}`, want: "Run: make build (in pkg)"},
-		{name: "edit", tool: "edit", args: `{"path":"main.go","edits":[{"oldText":"func main() {}","newText":"func run() {}"}]}`, want: "Edit: main.go\n  replace \"func main() {}\" with \"func run() {}\""},
+		{name: "edit", tool: "edit", args: `{"path":"main.go","edits":[{"oldText":"func main() {}","newText":"func run() {}"}]}`, want: "Edit: main.go\n- func main() {}\n+ func run() {}"},
+		{name: "edit multi-line", tool: "edit", args: `{"path":"main.go","edits":[{"oldText":"line one\nline two","newText":"line one\nline two edited"}]}`, want: "Edit: main.go\n- line one\n- line two\n+ line one\n+ line two edited"},
+		{name: "edit multiple changes", tool: "edit", args: `{"path":"main.go","edits":[{"oldText":"a","newText":"b"},{"oldText":"c","newText":"d"}]}`, want: "Edit: main.go\nChange 1:\n- a\n+ b\nChange 2:\n- c\n+ d"},
+		{name: "edit deletion", tool: "edit", args: `{"path":"main.go","edits":[{"oldText":"drop me","newText":""}]}`, want: "Edit: main.go\n- drop me"},
+		{name: "edit trailing newline", tool: "edit", args: `{"path":"main.go","edits":[{"oldText":"line\n","newText":"line\nnew\n"}]}`, want: "Edit: main.go\n- line\n+ line\n+ new"},
 		{name: "write", tool: "write", args: `{"path":"notes.txt","content":"hello"}`, want: "Write: notes.txt"},
 		{name: "write overwrite", tool: "write", args: `{"path":"main.go","content":"x","overwrite":true}`, want: "Write: main.go (overwrite)"},
 		{name: "read", tool: "read", args: `{"path":"main.go"}`, want: "Read: main.go"},

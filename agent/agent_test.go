@@ -551,11 +551,10 @@ func TestAgentShowsCommandReportBeforeApprovalDecision(t *testing.T) {
 		t.Errorf("response = %q, want final response", result.Response)
 	}
 	rendered := output.String()
-	report := `replace "func main() {}" with "func run() {}"`
-	if !strings.Contains(rendered, "Command Report:") || !strings.Contains(rendered, report) {
+	if !strings.Contains(rendered, "Command Report:") || !strings.Contains(rendered, "- func main() {}") || !strings.Contains(rendered, "+ func run() {}") {
 		t.Errorf("output = %q, want Command Report shown at the Approval point", rendered)
 	}
-	if strings.Index(rendered, report) >= strings.Index(rendered, "Approve?") {
+	if strings.Index(rendered, "- func main() {}") >= strings.Index(rendered, "Approve?") {
 		t.Errorf("output = %q, want Command Report before the y/n decision", rendered)
 	}
 	got, err := os.ReadFile(file)
