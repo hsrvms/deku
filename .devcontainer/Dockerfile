@@ -30,7 +30,7 @@ RUN --mount=type=cache,target=/go/pkg/mod \
     go install honnef.co/go/tools/cmd/staticcheck@${STATICCHECK_VERSION}
 
 FROM ${NODE_IMAGE} AS node-tools
-ARG PI_VERSION=0.83.0
+ARG PI_VERSION=0.84.0
 RUN npm install --global --ignore-scripts \
         @earendil-works/pi-coding-agent@${PI_VERSION} \
     && npm cache clean --force
