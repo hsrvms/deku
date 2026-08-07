@@ -284,6 +284,46 @@ func trusted(dekuHome, projectRoot string) (bool, error) {
 	return false, nil
 }
 
+// GrantTrust records the user's Trust decision for the project at root in the
+// Deku Home trust record, creating the record when it is absent and preserving
+// existing entries. It is idempotent: an already-trusted root is left
+// unchanged. A malformed existing record is an error so a broken trust record
+// is never silently overwritten.
+func GrantTrust(projectRoot string) error {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return err
+	}
+	dekuHome := filepath.Join(home, ".deku")
+	root, err := filepath.Abs(projectRoot)
+	if err != nil {
+		return fmt.Errorf("resolve project root: %w", err)
+	}
+	root = filepath.Clean(root)
+
+	record, err := loadModule[trustFile](dekuHome, trustFileName)
+	if err != nil {
+		return err
+	}
+	var projects []string
+	if record != nil {
+		projects = record.Projects
+	}
+	for _, project := range projects {
+		if filepath.Clean(project) == root {
+			return nil
+		}
+	}
+	data, err := json.MarshalIndent(trustFile{Projects: append(projects, root)}, "", "  ")
+	if err != nil {
+		return err
+	}
+	if err := os.MkdirAll(dekuHome, 0o700); err != nil {
+		return err
+	}
+	return os.WriteFile(filepath.Join(dekuHome, trustFileName), data, 0o600)
+}
+
 // effectiveLookup returns a lookup that consults the real process environment
 // first and falls back to the Deku Home .env file.
 func effectiveLookup(envFile map[string]string) lookup {

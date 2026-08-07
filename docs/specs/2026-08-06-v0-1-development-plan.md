@@ -47,7 +47,11 @@ record (`~/.deku/trusted_projects.json`); the decision is a deterministic
 exact-path match, an absent record trusts nothing, and an untrusted
 project's files are never read. A trusted project's module replaces the Deku
 Home module of the same name as a whole under Config Precedence
-(`defaults < global < project < environment-as-source`).
+(`defaults < global < project < environment-as-source`). Trust is granted
+interactively: when a repository carries Project Config and input is a
+terminal, the CLI asks whether to trust the project and records a yes answer
+in the trust record automatically (`config.GrantTrust`) before reloading
+configuration; non-interactive runs never prompt and never trust.
 
 ## Phase 2 — Provider registry and Selection (ADR 0008)
 

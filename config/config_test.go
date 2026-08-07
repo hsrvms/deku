@@ -1173,3 +1173,92 @@ func TestProjectScopeTrustedEmptyDirectoryNotLoaded(t *testing.T) {
 		t.Errorf("project scope = %+v, want present and trusted but nothing loaded", cfg.Project)
 	}
 }
+
+func TestGrantTrustCreatesRecord(t *testing.T) {
+	project := t.TempDir()
+	writeDekuHome(t, map[string]string{
+		"auth.json":   `{ "api_key": "sk-global-key" }`,
+		"models.json": `{ "endpoint": "https://api.global.com/v1", "model": "global-model" }`,
+	})
+
+	if err := GrantTrust(project); err != nil {
+		t.Fatalf("GrantTrust() error = %v", err)
+	}
+	record := readTrustRecord(t)
+	want := []string{filepath.Clean(project)}
+	if !reflect.DeepEqual(record.Projects, want) {
+		t.Errorf("trust record projects = %#v, want %#v", record.Projects, want)
+	}
+
+	// The grant takes effect: the project's config now loads.
+	writeProject(t, project, map[string]string{
+		"settings.json": `{ "agent_commits": { "mode": "on" } }`,
+	})
+	cfg, err := Load(project)
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	if !cfg.Project.Trusted || !cfg.Project.Loaded {
+		t.Errorf("project scope = %+v, want trusted and loaded after grant", cfg.Project)
+	}
+	if cfg.AgentCommits.Mode != "on" {
+		t.Errorf("agent_commits.mode = %q, want project value after grant", cfg.AgentCommits.Mode)
+	}
+}
+
+func TestGrantTrustAppendsPreservingExistingEntries(t *testing.T) {
+	project := t.TempDir()
+	other := filepath.Join(t.TempDir(), "other")
+	writeDekuHome(t, map[string]string{
+		trustFileName: `{ "projects": ["` + other + `"] }`,
+	})
+
+	if err := GrantTrust(project); err != nil {
+		t.Fatalf("GrantTrust() error = %v", err)
+	}
+	record := readTrustRecord(t)
+	want := []string{filepath.Clean(other), filepath.Clean(project)}
+	if !reflect.DeepEqual(record.Projects, want) {
+		t.Errorf("trust record projects = %#v, want %#v", record.Projects, want)
+	}
+}
+
+func TestGrantTrustIdempotent(t *testing.T) {
+	project := t.TempDir()
+	writeDekuHome(t, map[string]string{
+		trustFileName: `{ "projects": ["` + filepath.Clean(project) + `"] }`,
+	})
+
+	if err := GrantTrust(project); err != nil {
+		t.Fatalf("GrantTrust() error = %v", err)
+	}
+	record := readTrustRecord(t)
+	if len(record.Projects) != 1 || record.Projects[0] != filepath.Clean(project) {
+		t.Errorf("trust record projects = %#v, want a single entry for the project", record.Projects)
+	}
+}
+
+func TestGrantTrustMalformedRecordFails(t *testing.T) {
+	writeDekuHome(t, map[string]string{
+		trustFileName: `{ not valid json`,
+	})
+
+	if err := GrantTrust(t.TempDir()); err == nil {
+		t.Fatal("expected error for malformed trust record")
+	}
+}
+
+// readTrustRecord reads the Deku Home trust record written by the current
+// test.
+func readTrustRecord(t *testing.T) trustFile {
+	t.Helper()
+	data, err := os.ReadFile(filepath.Join(os.Getenv("HOME"), ".deku", trustFileName))
+	if err != nil {
+		t.Fatalf("read trust record: %v", err)
+	}
+	var record trustFile
+	if err := json.Unmarshal(data, &record); err != nil {
+		t.Fatalf("decode trust record: %v", err)
+	}
+	return record
+}

@@ -11,6 +11,7 @@ import (
 	"testing"
 
 	"github.com/hsrvms/deku/agent"
+	"github.com/hsrvms/deku/config"
 	"net/http"
 	"net/http/httptest"
 )
@@ -189,6 +190,125 @@ func TestRunReportsLoadedProjectConfig(t *testing.T) {
 	}
 	if !strings.Contains(stderr.String(), "project config loaded") {
 		t.Errorf("stderr = %q, want loaded project config notice", stderr.String())
+	}
+}
+
+func TestPromptTrust(t *testing.T) {
+	for _, tc := range []struct {
+		in      string
+		want    bool
+		wantErr bool
+	}{
+		{in: "y\n", want: true},
+		{in: "yes\n", want: true},
+		{in: "Y\n", want: true},
+		{in: "n\n", want: false},
+		{in: "no\n", want: false},
+		{in: "\n", want: false},
+		{in: "", want: false}, // EOF declines: never trust without consent
+		{in: "maybe\ny\n", want: true},
+	} {
+		var output bytes.Buffer
+		got, err := promptTrust(strings.NewReader(tc.in), &output, "/tmp/project")
+		if tc.wantErr && err == nil {
+			t.Errorf("promptTrust(%q) error = nil, want error", tc.in)
+			continue
+		}
+		if !tc.wantErr && err != nil {
+			t.Errorf("promptTrust(%q) error = %v", tc.in, err)
+			continue
+		}
+		if got != tc.want {
+			t.Errorf("promptTrust(%q) = %v, want %v", tc.in, got, tc.want)
+		}
+		if !strings.Contains(output.String(), "Trust this project?") {
+			t.Errorf("promptTrust(%q) output = %q, want the trust question", tc.in, output.String())
+		}
+	}
+}
+
+func TestResolveProjectTrustInteractiveGrants(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("DEKU_PROVIDER_ENDPOINT", "https://api.example.com/v1")
+	t.Setenv("DEKU_PROVIDER_API_KEY", "test-key")
+	t.Setenv("DEKU_PROVIDER_MODEL", "test-model")
+	repo := initGitRepo(t)
+	writeProjectConfig(t, repo)
+	cfg, err := config.Load(repo)
+	if err != nil {
+		t.Fatalf("config.Load() error = %v", err)
+	}
+
+	var output bytes.Buffer
+	resolved, err := resolveProjectTrust(cfg, repo, strings.NewReader("y\n"), &output, true)
+	if err != nil {
+		t.Fatalf("resolveProjectTrust() error = %v", err)
+	}
+	if !resolved.Project.Loaded {
+		t.Errorf("resolved project scope = %+v, want loaded after interactive grant", resolved.Project)
+	}
+	if resolved.AgentCommits.Mode != "ask" {
+		t.Errorf("agent_commits.mode = %q, want project value after interactive grant", resolved.AgentCommits.Mode)
+	}
+	data, err := os.ReadFile(filepath.Join(home, ".deku", "trusted_projects.json"))
+	if err != nil {
+		t.Fatalf("trust record was not written: %v", err)
+	}
+	if !strings.Contains(string(data), repo) {
+		t.Errorf("trust record = %s, want it to list %s", data, repo)
+	}
+}
+
+func TestResolveProjectTrustInteractiveDeclines(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("DEKU_PROVIDER_ENDPOINT", "https://api.example.com/v1")
+	t.Setenv("DEKU_PROVIDER_API_KEY", "test-key")
+	t.Setenv("DEKU_PROVIDER_MODEL", "test-model")
+	repo := initGitRepo(t)
+	writeProjectConfig(t, repo)
+	cfg, err := config.Load(repo)
+	if err != nil {
+		t.Fatalf("config.Load() error = %v", err)
+	}
+
+	var output bytes.Buffer
+	resolved, err := resolveProjectTrust(cfg, repo, strings.NewReader("n\n"), &output, true)
+	if err != nil {
+		t.Fatalf("resolveProjectTrust() error = %v", err)
+	}
+	if resolved.Project.Trusted || resolved.Project.Loaded {
+		t.Errorf("resolved project scope = %+v, want untrusted after decline", resolved.Project)
+	}
+	if _, err := os.Stat(filepath.Join(home, ".deku", "trusted_projects.json")); !os.IsNotExist(err) {
+		t.Errorf("trust record exists after decline, want none")
+	}
+}
+
+func TestResolveProjectTrustNonInteractiveSkipsPrompt(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("DEKU_PROVIDER_ENDPOINT", "https://api.example.com/v1")
+	t.Setenv("DEKU_PROVIDER_API_KEY", "test-key")
+	t.Setenv("DEKU_PROVIDER_MODEL", "test-model")
+	repo := initGitRepo(t)
+	writeProjectConfig(t, repo)
+	cfg, err := config.Load(repo)
+	if err != nil {
+		t.Fatalf("config.Load() error = %v", err)
+	}
+
+	var output bytes.Buffer
+	resolved, err := resolveProjectTrust(cfg, repo, strings.NewReader(""), &output, false)
+	if err != nil {
+		t.Fatalf("resolveProjectTrust() error = %v", err)
+	}
+	if resolved != cfg {
+		t.Errorf("non-interactive resolution changed the config")
+	}
+	if output.Len() != 0 {
+		t.Errorf("non-interactive resolution output = %q, want no prompt", output.String())
 	}
 }
 

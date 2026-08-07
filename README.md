@@ -116,8 +116,20 @@ modules under a `.deku/` directory at the repository top level:
 - `.deku/auth.json` — credentials: the Provider API key.
 - `.deku/models.json` — the non-secret Provider declaration: endpoint and model.
 
-Project Config is loaded **only after you grant the project Trust**. Grant
-Trust by listing the repository's absolute path in `~/.deku/trusted_projects.json`:
+Project Config is loaded **only after you grant the project Trust**. When you
+run Deku interactively in a repository that carries Project Config, Deku asks
+whether to trust the project:
+
+```
+deku: project config found at /path/to/repository/.deku
+Trust this project? [y/N]
+```
+
+Answering `y` records the repository root in `~/.deku/trusted_projects.json`
+automatically and loads the Project Config; answering `n`, or running with
+piped input, ignores it — an untrusted repository is never trusted without
+your explicit consent. You can also grant Trust ahead of time by listing the
+repository's absolute path in the file:
 
 ```json
 {
