@@ -77,6 +77,29 @@ type Repo struct {
 	root string
 }
 
+// Root returns the absolute top-level directory of the Git repository that
+// contains dir, or "" when dir is not inside a Git repository. It locates the
+// project scope: Project Config lives in a .deku directory at the repository
+// top level, so the top level, not the current directory, is what matters.
+func Root(dir string) (string, error) {
+	absolute, err := filepath.Abs(dir)
+	if err != nil {
+		return "", fmt.Errorf("resolve directory: %w", err)
+	}
+	cmd := exec.Command("git", "-C", absolute, "rev-parse", "--show-toplevel")
+	out, err := cmd.Output()
+	if err != nil {
+		// Not inside a Git repository, or Git is unavailable: there is no
+		// project scope.
+		return "", nil
+	}
+	top := strings.TrimSpace(string(out))
+	if top == "" {
+		return "", nil
+	}
+	return filepath.Abs(top)
+}
+
 // New validates root and constructs a Repo backed by the Git repository there.
 // A directory that is not a Git repository is rejected so callers fail fast
 // before a Turn begins.

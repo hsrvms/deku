@@ -5,6 +5,7 @@ package main
 import (
 	"bufio"
 	"context"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -46,12 +47,35 @@ func run(args []string, input io.Reader, output, errorOutput io.Writer) int {
 		return 0
 	}
 
-	cfg, err := config.Load()
+	projectRoot, err := repository.Root(".")
 	if err != nil {
 		if writeErr := writeError(errorOutput, "deku: %v\n", err); writeErr != nil {
 			return 1
 		}
 		return 1
+	}
+	cfg, err := config.Load(projectRoot)
+	if err != nil {
+		if writeErr := writeError(errorOutput, "deku: %v\n", err); writeErr != nil {
+			return 1
+		}
+		return 1
+	}
+	cfg, err = resolveProjectTrust(cfg, projectRoot, input, output, isTerminal(input))
+	if err != nil {
+		if writeErr := writeError(errorOutput, "deku: %v\n", err); writeErr != nil {
+			return 1
+		}
+		return 1
+	}
+	if cfg.Project.Loaded {
+		if err := writeError(errorOutput, "deku: project config loaded from %s/.deku\n", cfg.Project.Root); err != nil {
+			return 1
+		}
+	} else if cfg.Project.Present {
+		if err := writeError(errorOutput, "deku: project config found at %s/.deku but this project is not trusted; add %s to ~/.deku/trusted_projects.json to load it\n", cfg.Project.Root, cfg.Project.Root); err != nil {
+			return 1
+		}
 	}
 	store, err := session.DefaultStore()
 	if err != nil {
@@ -106,6 +130,75 @@ func run(args []string, input io.Reader, output, errorOutput io.Writer) int {
 	}
 	runner := agent.NewWithGit(model, cfg.Provider.Model, conversation, output, input, registry, policy, cfg.RepoMap.Exclude, repo, commitMode, cfg.AgentCommits.Validation)
 	return runConversation(runner, input, output, errorOutput)
+}
+
+// resolveProjectTrust handles the Project Trust decision for a repository that
+// carries Project Config. When the user can answer (interactive terminal), it
+// asks whether to trust the project; a yes answer records the decision through
+// config.GrantTrust and reloads configuration so the Project Config applies. A
+// no answer, or a non-interactive run, leaves the project untrusted and the
+// configuration untouched — an untrusted repository is never trusted by
+// default. The returned Config is the reloaded one when Trust was granted.
+func resolveProjectTrust(cfg *config.Config, projectRoot string, input io.Reader, output io.Writer, interactive bool) (*config.Config, error) {
+	if !cfg.Project.Present || cfg.Project.Trusted {
+		return cfg, nil
+	}
+	if !interactive {
+		return cfg, nil
+	}
+	granted, err := promptTrust(input, output, cfg.Project.Root)
+	if err != nil {
+		return nil, err
+	}
+	if !granted {
+		return cfg, nil
+	}
+	if err := config.GrantTrust(cfg.Project.Root); err != nil {
+		return nil, fmt.Errorf("grant project trust: %w", err)
+	}
+	return config.Load(projectRoot)
+}
+
+// promptTrust asks the user whether to grant Trust to the project at root,
+// following the Approval prompt convention (y/yes or n/no, re-prompting on
+// other input). An end of input declines: an untrusted repository is never
+// trusted without explicit consent.
+func promptTrust(input io.Reader, output io.Writer, root string) (bool, error) {
+	if _, err := fmt.Fprintf(output, "deku: project config found at %s/.deku\nTrust this project? [y/N] ", root); err != nil {
+		return false, fmt.Errorf("display trust prompt: %w", err)
+	}
+	br := bufio.NewReader(input)
+	for {
+		line, err := br.ReadString('\n')
+		if err != nil && !errors.Is(err, io.EOF) {
+			return false, fmt.Errorf("read trust decision: %w", err)
+		}
+		switch strings.ToLower(strings.TrimSpace(line)) {
+		case "y", "yes":
+			return true, nil
+		case "n", "no", "":
+			return false, nil
+		default:
+			if _, err := io.WriteString(output, "Please answer y (trust) or n (ignore): "); err != nil {
+				return false, fmt.Errorf("display trust prompt: %w", err)
+			}
+		}
+	}
+}
+
+// isTerminal reports whether input is an interactive terminal, so the Trust
+// prompt is shown only when a user can answer it. Piped and captured input
+// never prompt.
+func isTerminal(input io.Reader) bool {
+	file, ok := input.(*os.File)
+	if !ok {
+		return false
+	}
+	info, err := file.Stat()
+	if err != nil {
+		return false
+	}
+	return info.Mode()&os.ModeCharDevice != 0
 }
 
 func loadConversation(store *session.Store, resumeID string) (*session.Session, error) {

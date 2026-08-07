@@ -35,9 +35,23 @@ fully satisfied.
 **Delivered by issue #36:** the modular split into `settings.json` /
 `auth.json` / `models.json` and the Deku Home `.env` auto-loading with the
 real process environment winning, satisfying user stories 6, 9, and 10 at the
-module granularity. Project Config and the Project Trust gate remain deferred
-to issue #38, which also completes the section-replacement rule between file
-sources.
+module granularity.
+
+**Delivered by issue #38:** Project Config and the Project Trust gate,
+completing the section-replacement rule between file sources and satisfying
+user stories 5 and 7. Project Config uses the same three optional modules
+(`settings.json` / `auth.json` / `models.json`) under a `.deku/` directory at
+the repository top level, located through the Git top level. Project modules
+are loaded only when the repository's root is listed in the Deku Home trust
+record (`~/.deku/trusted_projects.json`); the decision is a deterministic
+exact-path match, an absent record trusts nothing, and an untrusted
+project's files are never read. A trusted project's module replaces the Deku
+Home module of the same name as a whole under Config Precedence
+(`defaults < global < project < environment-as-source`). Trust is granted
+interactively: when a repository carries Project Config and input is a
+terminal, the CLI asks whether to trust the project and records a yes answer
+in the trust record automatically (`config.GrantTrust`) before reloading
+configuration; non-interactive runs never prompt and never trust.
 
 ## Phase 2 — Provider registry and Selection (ADR 0008)
 

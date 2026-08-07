@@ -91,6 +91,54 @@ func TestNewRejectsNonRepository(t *testing.T) {
 	}
 }
 
+func TestRootDiscoversRepositoryTopLevel(t *testing.T) {
+	root := initRepo(t)
+	sub := filepath.Join(root, "a", "b")
+	if err := os.MkdirAll(sub, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	got, err := Root(sub)
+	if err != nil {
+		t.Fatalf("Root() error = %v", err)
+	}
+	if got != root {
+		t.Errorf("Root() = %q, want top-level %q", got, root)
+	}
+}
+
+func TestRootAtRepositoryRoot(t *testing.T) {
+	root := initRepo(t)
+	got, err := Root(root)
+	if err != nil {
+		t.Fatalf("Root() error = %v", err)
+	}
+	if got != root {
+		t.Errorf("Root() = %q, want %q", got, root)
+	}
+}
+
+func TestRootOutsideRepositoryIsEmpty(t *testing.T) {
+	dir := t.TempDir()
+	got, err := Root(dir)
+	if err != nil {
+		t.Fatalf("Root() error = %v", err)
+	}
+	if got != "" {
+		t.Errorf("Root() = %q, want empty outside a repository", got)
+	}
+}
+
+func TestRootMissingDirectoryIsEmpty(t *testing.T) {
+	missing := filepath.Join(t.TempDir(), "nope")
+	got, err := Root(missing)
+	if err != nil {
+		t.Fatalf("Root() error = %v", err)
+	}
+	if got != "" {
+		t.Errorf("Root() = %q, want empty for a missing directory", got)
+	}
+}
+
 func TestStateClean(t *testing.T) {
 	dir := initRepo(t)
 	commitFile(t, dir, "main.go", "package main\n")
