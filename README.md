@@ -131,6 +131,11 @@ The Trust decision is deterministic — a repository is trusted only when its
 absolute path matches a listed path exactly (after path cleaning); an absent
 or empty trust record trusts nothing.
 
+Deku reports the project scope at startup, so you always know whether
+project-scope configuration is in effect: it prints `project config loaded
+from <root>/.deku` when a trusted project's modules apply, or a notice that
+Project Config was found but ignored because the project is not trusted.
+
 Under Config Precedence, a trusted project's module **replaces** the Deku Home
 module of the same name as a whole, rather than merging field-by-field: a
 field the project module omits falls back to the built-in default, not to the

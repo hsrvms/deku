@@ -41,6 +41,24 @@ type Config struct {
 	Approval     ApprovalConfig
 	RepoMap      RepoMapConfig
 	AgentCommits AgentCommitsConfig
+	// Project describes the Project Config state for the Repository Deku
+	// runs in, so the CLI can report whether project-scope configuration was
+	// applied or ignored.
+	Project ProjectScope
+}
+
+// ProjectScope describes the Project Config state for the Repository Deku
+// runs in. Root is the repository top-level directory (empty when the process
+// is not inside a Git repository). Present reports whether the repository
+// carries a .deku directory. Trusted reports whether the user granted the
+// project Trust. Loaded reports whether at least one Project Config module
+// was applied; it is always false for an untrusted project, whose files are
+// never read.
+type ProjectScope struct {
+	Root    string
+	Present bool
+	Trusted bool
+	Loaded  bool
 }
 
 // ProviderConfig holds the OpenAI-compatible provider declaration.
@@ -134,7 +152,8 @@ type lookup func(string) (string, bool)
 // process is not inside a Git repository, in which case there is no project
 // scope). Project Config is read only when the user has granted the project
 // Trust by listing its root in the Deku Home trust record; an untrusted
-// project's files are never read.
+// project's files are never read. cfg.Project reports the project scope
+// outcome for the caller to surface.
 //
 // Returns an error when a required value is missing, a placeholder references
 // an unset variable with no default, a module or .env file is malformed, or
@@ -165,6 +184,7 @@ func Load(projectRoot string) (*Config, error) {
 		return nil, err
 	}
 
+	cfg := &Config{}
 	// Project Config is gated by Project Trust: an untrusted project is
 	// ignored entirely, so its files are never read and cannot affect the
 	// session. A trusted project's modules replace the Deku Home modules of
@@ -172,36 +192,45 @@ func Load(projectRoot string) (*Config, error) {
 	settings := globalSettings
 	auth := globalAuth
 	models := globalModels
+	loaded := false
 	if projectRoot != "" {
 		absoluteRoot, err := filepath.Abs(projectRoot)
 		if err != nil {
 			return nil, fmt.Errorf("resolve project root: %w", err)
 		}
+		projectDir := filepath.Join(absoluteRoot, ".deku")
+		cfg.Project = ProjectScope{Root: absoluteRoot}
+		if info, err := os.Stat(projectDir); err == nil && info.IsDir() {
+			cfg.Project.Present = true
+		}
 		granted, err := trusted(dekuHome, absoluteRoot)
 		if err != nil {
 			return nil, err
 		}
+		cfg.Project.Trusted = granted
 		if granted {
-			projectDir := filepath.Join(absoluteRoot, ".deku")
 			if projectSettings, err := loadModule[settingsFile](projectDir, settingsModule); err != nil {
 				return nil, err
 			} else if projectSettings != nil {
 				settings = projectSettings
+				loaded = true
 			}
 			if projectAuth, err := loadModule[authFile](projectDir, authModule); err != nil {
 				return nil, err
 			} else if projectAuth != nil {
 				auth = projectAuth
+				loaded = true
 			}
 			if projectModels, err := loadModule[modelsFile](projectDir, modelsModule); err != nil {
 				return nil, err
 			} else if projectModels != nil {
 				models = projectModels
+				loaded = true
 			}
 		}
+		cfg.Project.Loaded = loaded
 	}
 
-	cfg := &Config{}
 	if settings != nil {
 		cfg.Approval.Tools = settings.Approval.Tools
 		cfg.Approval.Defaults = settings.Approval.Defaults

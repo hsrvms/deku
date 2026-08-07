@@ -60,6 +60,15 @@ func run(args []string, input io.Reader, output, errorOutput io.Writer) int {
 		}
 		return 1
 	}
+	if cfg.Project.Loaded {
+		if err := writeError(errorOutput, "deku: project config loaded from %s/.deku\n", cfg.Project.Root); err != nil {
+			return 1
+		}
+	} else if cfg.Project.Present {
+		if err := writeError(errorOutput, "deku: project config found at %s/.deku but this project is not trusted; add %s to ~/.deku/trusted_projects.json to load it\n", cfg.Project.Root, cfg.Project.Root); err != nil {
+			return 1
+		}
+	}
 	store, err := session.DefaultStore()
 	if err != nil {
 		if writeErr := writeError(errorOutput, "deku: initialize sessions: %v\n", err); writeErr != nil {

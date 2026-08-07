@@ -1081,3 +1081,95 @@ func TestProjectRootMissingDirectoryIgnored(t *testing.T) {
 		t.Errorf("endpoint = %q, want global value for missing project root", cfg.Provider.Endpoint)
 	}
 }
+
+func TestProjectScopeReportedWhenLoaded(t *testing.T) {
+	project := t.TempDir()
+	writeModules(t,
+		`{ "agent_commits": { "mode": "ask" } }`,
+		`{ "api_key": "sk-global-key" }`,
+		`{
+  "endpoint": "https://api.global.com/v1",
+  "model": "global-model"
+}`)
+	writeProject(t, project, map[string]string{
+		"settings.json": `{ "agent_commits": { "mode": "on" } }`,
+	})
+	grantTrust(t, project)
+
+	cfg, err := Load(project)
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	if cfg.Project.Root != project {
+		t.Errorf("project root = %q, want %q", cfg.Project.Root, project)
+	}
+	if !cfg.Project.Present || !cfg.Project.Trusted || !cfg.Project.Loaded {
+		t.Errorf("project scope = %+v, want present, trusted, and loaded", cfg.Project)
+	}
+}
+
+func TestProjectScopeReportedWhenUntrusted(t *testing.T) {
+	project := t.TempDir()
+	writeModules(t,
+		`{ "agent_commits": { "mode": "ask" } }`,
+		`{ "api_key": "sk-global-key" }`,
+		`{
+  "endpoint": "https://api.global.com/v1",
+  "model": "global-model"
+}`)
+	writeProject(t, project, map[string]string{
+		"settings.json": `{ "agent_commits": { "mode": "on" } }`,
+	})
+
+	cfg, err := Load(project)
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	if cfg.Project.Root != project {
+		t.Errorf("project root = %q, want %q", cfg.Project.Root, project)
+	}
+	if !cfg.Project.Present || cfg.Project.Trusted || cfg.Project.Loaded {
+		t.Errorf("project scope = %+v, want present but untrusted and not loaded", cfg.Project)
+	}
+}
+
+func TestProjectScopeAbsentOutsideRepository(t *testing.T) {
+	writeModules(t,
+		``,
+		`{ "api_key": "sk-global-key" }`,
+		`{
+  "endpoint": "https://api.global.com/v1",
+  "model": "global-model"
+}`)
+
+	cfg, err := Load("")
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	if cfg.Project != (ProjectScope{}) {
+		t.Errorf("project scope = %+v, want zero value outside a repository", cfg.Project)
+	}
+}
+
+func TestProjectScopeTrustedEmptyDirectoryNotLoaded(t *testing.T) {
+	project := t.TempDir()
+	writeModules(t,
+		`{ "agent_commits": { "mode": "ask" } }`,
+		`{ "api_key": "sk-global-key" }`,
+		`{
+  "endpoint": "https://api.global.com/v1",
+  "model": "global-model"
+}`)
+	if err := os.MkdirAll(filepath.Join(project, ".deku"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	grantTrust(t, project)
+
+	cfg, err := Load(project)
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	if !cfg.Project.Present || !cfg.Project.Trusted || cfg.Project.Loaded {
+		t.Errorf("project scope = %+v, want present and trusted but nothing loaded", cfg.Project)
+	}
+}

@@ -4,13 +4,15 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"strings"
+	"testing"
 
 	"github.com/hsrvms/deku/agent"
 	"net/http"
 	"net/http/httptest"
-	"os"
-	"strings"
-	"testing"
 )
 
 func TestReportGitResult(t *testing.T) {
@@ -113,6 +115,80 @@ func TestRunStartsConversationAndStreamsResponse(t *testing.T) {
 	}
 	if len(entries) != 1 {
 		t.Fatalf("session files = %d, want one", len(entries))
+	}
+}
+
+// initGitRepo creates a temporary Git repository and returns its root, so CLI
+// tests can place Project Config in a real repository.
+func initGitRepo(t *testing.T) string {
+	t.Helper()
+	dir := t.TempDir()
+	cmd := exec.Command("git", "init", "-q")
+	cmd.Dir = dir
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("git init: %v: %s", err, out)
+	}
+	return dir
+}
+
+// writeProjectConfig writes a .deku directory with one settings module into
+// the repository at root.
+func writeProjectConfig(t *testing.T, root string) {
+	t.Helper()
+	if err := os.MkdirAll(filepath.Join(root, ".deku"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	body := `{ "agent_commits": { "mode": "ask" } }`
+	if err := os.WriteFile(filepath.Join(root, ".deku", "settings.json"), []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestRunReportsUntrustedProjectConfig(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("DEKU_PROVIDER_ENDPOINT", "https://api.example.com/v1")
+	t.Setenv("DEKU_PROVIDER_API_KEY", "test-key")
+	t.Setenv("DEKU_PROVIDER_MODEL", "test-model")
+	repo := initGitRepo(t)
+	writeProjectConfig(t, repo)
+	t.Chdir(repo)
+
+	var stdout, stderr bytes.Buffer
+	if status := run(nil, strings.NewReader(""), &stdout, &stderr); status != 0 {
+		t.Fatalf("run() status = %d, stderr = %q", status, stderr.String())
+	}
+	if !strings.Contains(stderr.String(), "not trusted") {
+		t.Errorf("stderr = %q, want untrusted project config notice", stderr.String())
+	}
+}
+
+func TestRunReportsLoadedProjectConfig(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("DEKU_PROVIDER_ENDPOINT", "https://api.example.com/v1")
+	t.Setenv("DEKU_PROVIDER_API_KEY", "test-key")
+	t.Setenv("DEKU_PROVIDER_MODEL", "test-model")
+	repo := initGitRepo(t)
+	writeProjectConfig(t, repo)
+	data, err := json.Marshal(map[string][]string{"projects": {repo}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(home, ".deku"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(home, ".deku", "trusted_projects.json"), data, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	t.Chdir(repo)
+
+	var stdout, stderr bytes.Buffer
+	if status := run(nil, strings.NewReader(""), &stdout, &stderr); status != 0 {
+		t.Fatalf("run() status = %d, stderr = %q", status, stderr.String())
+	}
+	if !strings.Contains(stderr.String(), "project config loaded") {
+		t.Errorf("stderr = %q, want loaded project config notice", stderr.String())
 	}
 }
 
