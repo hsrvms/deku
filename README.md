@@ -54,14 +54,42 @@ Use the platform's equivalent checksum and archive tools where `sha256sum`, `tar
 
 ## Usage
 
-Configure an OpenAI-compatible Provider with environment variables or
-`~/.deku/config.yaml`:
+Configure an OpenAI-compatible Provider with a JSON file in the **Deku Home**
+directory or with environment variables:
 
 ```sh
-export DEKU_PROVIDER_ENDPOINT=https://api.openai.com/v1
-export DEKU_PROVIDER_API_KEY=your-api-key
-export DEKU_PROVIDER_MODEL=your-model
+mkdir -p ~/.deku && cat > ~/.deku/config.json <<'EOF'
+{
+  "provider": {
+    "endpoint": "https://api.openai.com/v1",
+    "api_key": "your-api-key",
+    "model": "your-model"
+  }
+}
+EOF
 ```
+
+Configuration is resolved in Config Precedence order — built-in **defaults**,
+then the Deku Home **global** file, then the environment as the highest
+source. Every value in the file may reference the environment with Env
+Substitution: `${VAR}` resolves the variable, and `${VAR:-default}` falls back
+when it is unset or empty. A literal value overrides an environment
+placeholder, and a missing required value fails fast at startup:
+
+```json
+{
+  "provider": {
+    "endpoint": "${DEKU_PROVIDER_ENDPOINT:-https://api.openai.com/v1}",
+    "api_key": "${OPENAI_API_KEY}",
+    "model": "${DEKU_PROVIDER_MODEL:-gpt-4}"
+  }
+}
+```
+
+The provider endpoint, API key, and model are required; Deku refuses to start
+when any is missing. They can also be supplied directly to the environment as
+`DEKU_PROVIDER_ENDPOINT`, `DEKU_PROVIDER_API_KEY`, and `DEKU_PROVIDER_MODEL`,
+which take precedence over the file.
 
 Start the interactive chat from a repository:
 
@@ -96,17 +124,20 @@ inside an existing file. The `command` tool runs a shell command in the
 repository and is classified as Destructive, so it always prompts with a
 warning before executing.
 
-You can override the default classification in `~/.deku/config.yaml`. Per-tool
+You can override the default classification in `~/.deku/config.json`. Per-tool
 tier overrides change how a named tool is classified, and per-tier defaults
 change whether a tier runs unprompted (`auto`) or asks (`prompt`):
 
-```yaml
-approval:
-  tools:
-    edit: destructive   # classify edit as Destructive
-  defaults:
-    read: prompt        # ask even for read-only tools
-    write: auto         # run all Write tools without asking
+```json
+{
+  "approval": {
+    "tools": { "edit": "destructive" },   // classify edit as Destructive
+    "defaults": {                            // defaults are per-tier
+      "read": "prompt",                      // ask even for read-only tools
+      "write": "auto"                        // run all Write tools without asking
+    }
+  }
+}
 ```
 
 Deku injects a compact file-tree **Repository Map** into the system prompt on
@@ -115,29 +146,33 @@ mechanical file discovery. The map shows file paths, not source code; the model
 must use `read` to obtain actual file contents before editing. The map is
 generated fresh on each Step and its size is bounded to stay within a token
 budget. It respects `.gitignore` and an additional exclusion policy declared in
-`~/.deku/config.yaml`:
+`~/.deku/config.json`:
 
-```yaml
-repo_map:
-  exclude:
-    - "vendor"        # hide a whole directory
-    - "*.gen.go"      # hide generated files
+```json
+{
+  "repo_map": {
+    "exclude": ["vendor", "*.gen.go"]   // hide a whole directory and generated files
+  }
+}
 ```
 
 ## Git safety
 
 Deku can preserve a recoverable, attributable Git workflow. Agent Commits are
-opt-in and configured through `agent_commits.mode` in `~/.deku/config.yaml` (or
+opt-in and configured through `agent_commits.mode` in `~/.deku/config.json` (or
 the `DEKU_AGENT_COMMITS` environment variable):
 
 - `off` (default) — never create Agent Commits.
 - `ask` — ask before creating each Agent Commit after a completed Turn.
 - `on` — create an Agent Commit automatically after each completed Turn.
 
-```yaml
-agent_commits:
-  mode: off        # off | ask | on
-  validation: "go test ./..."   # command run before an Agent Commit
+```json
+{
+  "agent_commits": {
+    "mode": "off",               // off | ask | on
+    "validation": "go test ./..."  // command run before an Agent Commit
+  }
+}
 ```
 
 With Agent Commits enabled, Deku inspects the repository at startup. A clean

@@ -4,17 +4,54 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"strings"
 	"testing"
 )
 
+// writeGlobal writes a Deku Home config.json for the current test, pointing
+// $HOME at a fresh temporary directory that contains it.
+func writeGlobal(t *testing.T, body string) {
+	t.Helper()
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	dekuDir := filepath.Join(home, ".deku")
+	if err := os.MkdirAll(dekuDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dekuDir, "config.json"), []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestLoadValidatesRequiredFields(t *testing.T) {
-	// Missing all fields should fail.
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	_ = os.Unsetenv("DEKU_PROVIDER_ENDPOINT")
+	_ = os.Unsetenv("DEKU_PROVIDER_API_KEY")
+	_ = os.Unsetenv("DEKU_PROVIDER_MODEL")
+
 	cfg, err := Load()
 	if err == nil {
 		t.Fatalf("expected error for missing config, got nil")
 	}
 	if cfg != nil {
 		t.Errorf("expected nil config on error, got %+v", cfg)
+	}
+}
+
+func TestLoadRequiredFailureNamesTheField(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("DEKU_PROVIDER_ENDPOINT", "https://api.example.com/v1")
+	t.Setenv("DEKU_PROVIDER_API_KEY", "sk-test-key")
+	_ = os.Unsetenv("DEKU_PROVIDER_MODEL")
+
+	_, err := Load()
+	if err == nil {
+		t.Fatal("expected error for missing model")
+	}
+	if !strings.Contains(err.Error(), "provider model is required") {
+		t.Errorf("error = %q, want it to name the missing field", err)
 	}
 }
 
@@ -41,22 +78,13 @@ func TestLoadFromEnvVars(t *testing.T) {
 }
 
 func TestLoadFromConfigFile(t *testing.T) {
-	home := t.TempDir()
-	t.Setenv("HOME", home)
-
-	dekuDir := filepath.Join(home, ".deku")
-	if err := os.MkdirAll(dekuDir, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	yaml := `
-provider:
-  endpoint: "https://api.file.com/v1"
-  api_key: "sk-file-key"
-  model: "file-model"
-`
-	if err := os.WriteFile(filepath.Join(dekuDir, "config.yaml"), []byte(yaml), 0o644); err != nil {
-		t.Fatal(err)
-	}
+	writeGlobal(t, `{
+  "provider": {
+    "endpoint": "https://api.file.com/v1",
+    "api_key": "sk-file-key",
+    "model": "file-model"
+  }
+}`)
 
 	cfg, err := Load()
 	if err != nil {
@@ -74,23 +102,14 @@ provider:
 }
 
 func TestEnvVarsOverrideConfigFile(t *testing.T) {
-	home := t.TempDir()
-	t.Setenv("HOME", home)
+	writeGlobal(t, `{
+  "provider": {
+    "endpoint": "https://api.file.com/v1",
+    "api_key": "sk-file-key",
+    "model": "file-model"
+  }
+}`)
 	t.Setenv("DEKU_PROVIDER_ENDPOINT", "https://api.env.com/v1")
-
-	dekuDir := filepath.Join(home, ".deku")
-	if err := os.MkdirAll(dekuDir, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	yaml := `
-provider:
-  endpoint: "https://api.file.com/v1"
-  api_key: "sk-file-key"
-  model: "file-model"
-`
-	if err := os.WriteFile(filepath.Join(dekuDir, "config.yaml"), []byte(yaml), 0o644); err != nil {
-		t.Fatal(err)
-	}
 
 	cfg, err := Load()
 	if err != nil {
@@ -111,6 +130,7 @@ func TestLoadMissingProviderEndpoint(t *testing.T) {
 	t.Setenv("HOME", home)
 	t.Setenv("DEKU_PROVIDER_API_KEY", "sk-test-key")
 	t.Setenv("DEKU_PROVIDER_MODEL", "test-model")
+	_ = os.Unsetenv("DEKU_PROVIDER_ENDPOINT")
 
 	_, err := Load()
 	if err == nil {
@@ -123,6 +143,7 @@ func TestLoadMissingAPIKey(t *testing.T) {
 	t.Setenv("HOME", home)
 	t.Setenv("DEKU_PROVIDER_ENDPOINT", "https://api.example.com/v1")
 	t.Setenv("DEKU_PROVIDER_MODEL", "test-model")
+	_ = os.Unsetenv("DEKU_PROVIDER_API_KEY")
 
 	_, err := Load()
 	if err == nil {
@@ -135,6 +156,7 @@ func TestLoadMissingModel(t *testing.T) {
 	t.Setenv("HOME", home)
 	t.Setenv("DEKU_PROVIDER_ENDPOINT", "https://api.example.com/v1")
 	t.Setenv("DEKU_PROVIDER_API_KEY", "sk-test-key")
+	_ = os.Unsetenv("DEKU_PROVIDER_MODEL")
 
 	_, err := Load()
 	if err == nil {
@@ -143,31 +165,17 @@ func TestLoadMissingModel(t *testing.T) {
 }
 
 func TestLoadApprovalOverridesFromConfigFile(t *testing.T) {
-	home := t.TempDir()
-	t.Setenv("HOME", home)
-	t.Setenv("DEKU_PROVIDER_ENDPOINT", "https://api.example.com/v1")
-	t.Setenv("DEKU_PROVIDER_API_KEY", "sk-test-key")
-	t.Setenv("DEKU_PROVIDER_MODEL", "test-model")
-
-	dekuDir := filepath.Join(home, ".deku")
-	if err := os.MkdirAll(dekuDir, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	yaml := `
-provider:
-  endpoint: "https://api.file.com/v1"
-  api_key: "sk-file-key"
-  model: "file-model"
-approval:
-  tools:
-    edit: destructive
-  defaults:
-    read: prompt
-    write: auto
-`
-	if err := os.WriteFile(filepath.Join(dekuDir, "config.yaml"), []byte(yaml), 0o644); err != nil {
-		t.Fatal(err)
-	}
+	writeGlobal(t, `{
+  "provider": {
+    "endpoint": "https://api.file.com/v1",
+    "api_key": "sk-file-key",
+    "model": "file-model"
+  },
+  "approval": {
+    "tools": { "edit": "destructive" },
+    "defaults": { "read": "prompt", "write": "auto" }
+  }
+}`)
 
 	cfg, err := Load()
 	if err != nil {
@@ -185,29 +193,16 @@ approval:
 }
 
 func TestLoadRepoMapExcludeFromConfigFile(t *testing.T) {
-	home := t.TempDir()
-	t.Setenv("HOME", home)
-	t.Setenv("DEKU_PROVIDER_ENDPOINT", "https://api.example.com/v1")
-	t.Setenv("DEKU_PROVIDER_API_KEY", "sk-test-key")
-	t.Setenv("DEKU_PROVIDER_MODEL", "test-model")
-
-	dekuDir := filepath.Join(home, ".deku")
-	if err := os.MkdirAll(dekuDir, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	yaml := `
-provider:
-  endpoint: "https://api.file.com/v1"
-  api_key: "sk-file-key"
-  model: "file-model"
-repo_map:
-  exclude:
-    - "vendor"
-    - "*.gen.go"
-`
-	if err := os.WriteFile(filepath.Join(dekuDir, "config.yaml"), []byte(yaml), 0o644); err != nil {
-		t.Fatal(err)
-	}
+	writeGlobal(t, `{
+  "provider": {
+    "endpoint": "https://api.file.com/v1",
+    "api_key": "sk-file-key",
+    "model": "file-model"
+  },
+  "repo_map": {
+    "exclude": ["vendor", "*.gen.go"]
+  }
+}`)
 
 	cfg, err := Load()
 	if err != nil {
@@ -254,28 +249,17 @@ func TestAgentCommitsDefaults(t *testing.T) {
 }
 
 func TestAgentCommitsFromConfigFileAndEnv(t *testing.T) {
-	home := t.TempDir()
-	t.Setenv("HOME", home)
-	t.Setenv("DEKU_PROVIDER_ENDPOINT", "https://api.example.com/v1")
-	t.Setenv("DEKU_PROVIDER_API_KEY", "sk-test-key")
-	t.Setenv("DEKU_PROVIDER_MODEL", "test-model")
-
-	dekuDir := filepath.Join(home, ".deku")
-	if err := os.MkdirAll(dekuDir, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	yaml := `
-provider:
-  endpoint: "https://api.file.com/v1"
-  api_key: "sk-file-key"
-  model: "file-model"
-agent_commits:
-  mode: "ask"
-  validation: "make test"
-`
-	if err := os.WriteFile(filepath.Join(dekuDir, "config.yaml"), []byte(yaml), 0o644); err != nil {
-		t.Fatal(err)
-	}
+	writeGlobal(t, `{
+  "provider": {
+    "endpoint": "https://api.file.com/v1",
+    "api_key": "sk-file-key",
+    "model": "file-model"
+  },
+  "agent_commits": {
+    "mode": "ask",
+    "validation": "make test"
+  }
+}`)
 
 	cfg, err := Load()
 	if err != nil {
@@ -296,5 +280,190 @@ agent_commits:
 	}
 	if cfg.AgentCommits.Mode != "on" {
 		t.Errorf("agent_commits.mode = %q, want on from env override", cfg.AgentCommits.Mode)
+	}
+}
+
+func TestLoadInvalidJSONFails(t *testing.T) {
+	writeGlobal(t, `{ not valid json`)
+
+	_, err := Load()
+	if err == nil {
+		t.Fatal("expected error for malformed config.json")
+	}
+	if !strings.Contains(err.Error(), "config.json") {
+		t.Errorf("error = %q, want it to name config.json", err)
+	}
+}
+
+// --- Issue #34 acceptance: Env Substitution and Config Precedence ---
+
+func TestPlaceholderResolvesFromEnvironment(t *testing.T) {
+	writeGlobal(t, `{
+  "provider": {
+    "endpoint": "${ENDPOINT}",
+    "api_key": "${API_KEY}",
+    "model": "${MODEL}"
+  }
+}`)
+	t.Setenv("ENDPOINT", "https://api.example.com/v1")
+	t.Setenv("API_KEY", "sk-placeholder-key")
+	t.Setenv("MODEL", "placeholder-model")
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	if cfg.Provider.Endpoint != "https://api.example.com/v1" {
+		t.Errorf("endpoint = %q, want env substitution", cfg.Provider.Endpoint)
+	}
+	if cfg.Provider.Model != "placeholder-model" {
+		t.Errorf("model = %q, want env substitution", cfg.Provider.Model)
+	}
+}
+
+func TestPlaceholderWithDefaultFallsBackWhenUnset(t *testing.T) {
+	writeGlobal(t, `{
+  "provider": {
+    "endpoint": "${DEKU_PROVIDER_ENDPOINT:-https://default.example.com/v1}",
+    "api_key": "${API_KEY:-sk-default-key}",
+    "model": "${MODEL:-default-model}"
+  }
+}`)
+	_ = os.Unsetenv("DEKU_PROVIDER_ENDPOINT")
+	_ = os.Unsetenv("API_KEY")
+	_ = os.Unsetenv("MODEL")
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	if cfg.Provider.Endpoint != "https://default.example.com/v1" {
+		t.Errorf("endpoint = %q, want fallback default", cfg.Provider.Endpoint)
+	}
+	if cfg.Provider.APIKey != "sk-default-key" {
+		t.Errorf("api_key = %q, want fallback default", cfg.Provider.APIKey)
+	}
+	if cfg.Provider.Model != "default-model" {
+		t.Errorf("model = %q, want fallback default", cfg.Provider.Model)
+	}
+}
+
+func TestPlaceholderWithDefaultPrefersEnvWhenSet(t *testing.T) {
+	writeGlobal(t, `{
+  "provider": {
+    "endpoint": "${ENDPOINT:-https://default.example.com/v1}",
+    "api_key": "${API_KEY:-sk-default-key}",
+    "model": "${MODEL:-default-model}"
+  }
+}`)
+	t.Setenv("ENDPOINT", "https://api.example.com/v1")
+	t.Setenv("API_KEY", "sk-env-key")
+	t.Setenv("MODEL", "env-model")
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	if cfg.Provider.Endpoint != "https://api.example.com/v1" {
+		t.Errorf("endpoint = %q, want env value over fallback", cfg.Provider.Endpoint)
+	}
+	if cfg.Provider.APIKey != "sk-env-key" {
+		t.Errorf("api_key = %q, want env value over fallback", cfg.Provider.APIKey)
+	}
+	if cfg.Provider.Model != "env-model" {
+		t.Errorf("model = %q, want env value over fallback", cfg.Provider.Model)
+	}
+}
+
+func TestUnsetPlaceholderWithoutDefaultFails(t *testing.T) {
+	writeGlobal(t, `{
+  "provider": {
+    "endpoint": "${ENDPOINT}",
+    "api_key": "${API_KEY}",
+    "model": "file-model"
+  }
+}`)
+	_ = os.Unsetenv("ENDPOINT")
+	_ = os.Unsetenv("API_KEY")
+
+	_, err := Load()
+	if err == nil {
+		t.Fatal("expected error for unset placeholder without default")
+	}
+	if !strings.Contains(err.Error(), "ENDPOINT") {
+		t.Errorf("error = %q, want it to name the unset variable", err)
+	}
+}
+
+func TestLiteralOverridesEnvironmentPlaceholder(t *testing.T) {
+	// The global file leaves "model" to the environment via ${SOME_MODEL}.
+	// The environment-as-source layer (DEKU_PROVIDER_MODEL) pins a literal at
+	// higher precedence, so the literal overrides the placeholder.
+	writeGlobal(t, `{
+  "provider": {
+    "endpoint": "https://api.example.com/v1",
+    "api_key": "sk-file-key",
+    "model": "${SOME_MODEL}"
+  }
+}`)
+	t.Setenv("SOME_MODEL", "placeholder-model")
+	t.Setenv("DEKU_PROVIDER_MODEL", "env-source-model")
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	if cfg.Provider.Model != "env-source-model" {
+		t.Errorf("model = %q, want env-as-source literal to override placeholder", cfg.Provider.Model)
+	}
+}
+
+func TestConfigPrecedenceDefaultsGlobalEnv(t *testing.T) {
+	// agent_commits.mode: default "off" < global "ask" < env-as-source "on".
+	writeGlobal(t, `{
+  "provider": {
+    "endpoint": "https://api.example.com/v1",
+    "api_key": "sk-file-key",
+    "model": "file-model"
+  },
+  "agent_commits": { "mode": "ask" }
+}`)
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	if cfg.AgentCommits.Mode != "ask" {
+		t.Errorf("mode = %q, want ask from global over default off", cfg.AgentCommits.Mode)
+	}
+
+	t.Setenv("DEKU_AGENT_COMMITS", "on")
+	cfg, err = Load()
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	if cfg.AgentCommits.Mode != "on" {
+		t.Errorf("mode = %q, want on from env-as-source", cfg.AgentCommits.Mode)
+	}
+}
+
+func TestReplacePerSectionGlobalOverridesDefault(t *testing.T) {
+	// The validation field has no global override, so the built-in default
+	// remains; when the global section sets it, the global value wins.
+	writeGlobal(t, `{
+  "provider": {
+    "endpoint": "https://api.example.com/v1",
+    "api_key": "sk-file-key",
+    "model": "file-model"
+  },
+  "agent_commits": { "validation": "make ci" }
+}`)
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	if cfg.AgentCommits.Validation != "make ci" {
+		t.Errorf("validation = %q, want make ci from global", cfg.AgentCommits.Validation)
 	}
 }
