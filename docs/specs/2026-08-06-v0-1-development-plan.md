@@ -32,6 +32,13 @@ Trust gate, Deku Home `.env` auto-loading, and splitting configuration into
 Provider Registry in Phase 2). User stories 6, 7, and 9 are therefore not yet
 fully satisfied.
 
+**Delivered by issue #36:** the modular split into `settings.json` /
+`auth.json` / `models.json` and the Deku Home `.env` auto-loading with the
+real process environment winning, satisfying user stories 6, 9, and 10 at the
+module granularity. Project Config and the Project Trust gate remain deferred
+to issue #38, which also completes the section-replacement rule between file
+sources.
+
 ## Phase 2 — Provider registry and Selection (ADR 0008)
 
 Introduce the Adapter/Provider split and runtime selection.
