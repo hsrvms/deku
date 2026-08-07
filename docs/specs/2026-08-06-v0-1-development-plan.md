@@ -14,6 +14,24 @@ Replace the YAML loader with JSON configuration and the precedence model.
 - **Seam:** `config.Load` with controlled Deku Home and environment. Table-driven cases for precedence, substitution, missing-placeholder errors, section replacement, and the Trust gate.
 - **Done when:** the loader produces a `Config` with no Provider wiring yet; existing tests ported; docs (`README`, config reference) updated; spec user stories 1–10 pass.
 
+### Phase 1a — JSON configuration foundation (issue #34)
+
+Delivered by issue #34. The YAML loader is replaced by a JSON loader under Deku
+Home (`~/.deku/config.json`) that resolves every value in Config Precedence
+order `defaults < global < environment-as-source`, with Env Substitution
+(`${VAR}` / `${VAR:-default}`), a literal value overriding an environment
+placeholder, and a fast failure when a required value is missing or an unset
+placeholder has no default. The `provider.endpoint`, `provider.api_key`, and
+`provider.model` fields remain required; the `DEKU_PROVIDER_*` and
+`DEKU_AGENT_COMMITS` environment variables remain the environment-as-source
+layer. Existing config tests are ported from YAML to JSON.
+
+**Deferred from Phase 1 (not part of #34):** Project Config and the Project
+Trust gate, Deku Home `.env` auto-loading, and splitting configuration into
+`settings.json` / `auth.json` / `models.json` (that split accompanies the
+Provider Registry in Phase 2). User stories 6, 7, and 9 are therefore not yet
+fully satisfied.
+
 ## Phase 2 — Provider registry and Selection (ADR 0008)
 
 Introduce the Adapter/Provider split and runtime selection.
