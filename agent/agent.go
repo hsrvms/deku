@@ -15,6 +15,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/hsrvms/deku/activity"
 	"github.com/hsrvms/deku/approval"
 	"github.com/hsrvms/deku/lineio"
 	"github.com/hsrvms/deku/prompt"
@@ -68,6 +69,7 @@ type Agent struct {
 	validationCmd string
 	initialized   bool
 	stashRef      string
+	sink          activity.Sink
 
 	turnMu sync.Mutex
 }
@@ -81,13 +83,13 @@ var _ Runner = (*Agent)(nil)
 // standard input.
 func New(p provider.Chat, model string, conversation *session.Session, output io.Writer, input io.Reader) *Agent {
 	registry, err := tool.NewRegistry(".")
-	return newAgent(p, model, conversation, output, input, registry, approval.DefaultPolicy(), nil, err, nil, nil, repository.ModeOff, "")
+	return newAgent(p, model, conversation, output, input, registry, approval.DefaultPolicy(), nil, err, nil, nil, repository.ModeOff, "", nil)
 }
 
 // NewWithTools constructs an Agent with an explicit Tool registry. This is the
 // test and embedding seam for choosing the repository being explored.
 func NewWithTools(p provider.Chat, model string, conversation *session.Session, output io.Writer, input io.Reader, registry *tool.Registry) *Agent {
-	return newAgent(p, model, conversation, output, input, registry, approval.DefaultPolicy(), nil, nil, nil, nil, repository.ModeOff, "")
+	return newAgent(p, model, conversation, output, input, registry, approval.DefaultPolicy(), nil, nil, nil, nil, repository.ModeOff, "", nil)
 }
 
 // NewWithPolicy constructs an Agent with an explicit Tool registry, a
@@ -95,7 +97,15 @@ func NewWithTools(p provider.Chat, model string, conversation *session.Session, 
 // exclusion patterns are gitignore-style globs applied in addition to any
 // .gitignore files when building the Repository Map on every Step.
 func NewWithPolicy(p provider.Chat, model string, conversation *session.Session, output io.Writer, input io.Reader, registry *tool.Registry, policy approval.Policy, exclude []string) *Agent {
-	return newAgent(p, model, conversation, output, input, registry, policy, nil, nil, exclude, nil, repository.ModeOff, "")
+	return newAgent(p, model, conversation, output, input, registry, policy, nil, nil, exclude, nil, repository.ModeOff, "", nil)
+}
+
+// NewWithActivity constructs an Agent with an explicit Tool registry, Approval
+// policy, repository-map exclusions, and an activity Sink. This is the test and
+// embedding seam for observing the activity stream: a fake Sink records the
+// deterministic indicator transitions and change events across a Turn.
+func NewWithActivity(p provider.Chat, model string, conversation *session.Session, output io.Writer, input io.Reader, registry *tool.Registry, policy approval.Policy, exclude []string, sink activity.Sink) *Agent {
+	return newAgent(p, model, conversation, output, input, registry, policy, nil, nil, exclude, nil, repository.ModeOff, "", sink)
 }
 
 // NewWithGit constructs an Agent with Git safety enabled. The Repository is a
@@ -105,10 +115,10 @@ func NewWithPolicy(p provider.Chat, model string, conversation *session.Session,
 // Checkpoints, stashes, Validation, external-change detection, and Agent
 // Commit attribution.
 func NewWithGit(p provider.Chat, model string, conversation *session.Session, output io.Writer, input io.Reader, registry *tool.Registry, policy approval.Policy, exclude []string, repo *repository.Repo, mode repository.Mode, validation string) *Agent {
-	return newAgent(p, model, conversation, output, input, registry, policy, nil, nil, exclude, repo, mode, validation)
+	return newAgent(p, model, conversation, output, input, registry, policy, nil, nil, exclude, repo, mode, validation, nil)
 }
 
-func newAgent(p provider.Chat, model string, conversation *session.Session, output io.Writer, input io.Reader, registry *tool.Registry, policy approval.Policy, gate approval.Decider, toolErr error, exclude []string, repo *repository.Repo, mode repository.Mode, validationCmd string) *Agent {
+func newAgent(p provider.Chat, model string, conversation *session.Session, output io.Writer, input io.Reader, registry *tool.Registry, policy approval.Policy, gate approval.Decider, toolErr error, exclude []string, repo *repository.Repo, mode repository.Mode, validationCmd string, sink activity.Sink) *Agent {
 	if output == nil {
 		output = io.Discard
 	}
@@ -133,6 +143,9 @@ func newAgent(p provider.Chat, model string, conversation *session.Session, outp
 	if strings.TrimSpace(validationCmd) == "" {
 		validationCmd = defaultValidationCommand
 	}
+	if sink == nil {
+		sink = activity.Discard()
+	}
 	clone := &Agent{
 		provider:      p,
 		model:         model,
@@ -145,6 +158,7 @@ func newAgent(p provider.Chat, model string, conversation *session.Session, outp
 		repo:          repo,
 		commitMode:    mode,
 		validationCmd: validationCmd,
+		sink:          sink,
 	}
 	if registry != nil && toolErr == nil {
 		builder, err := repomap.NewBuilder(registry.Root(), exclude)
@@ -227,6 +241,7 @@ func (a *Agent) Turn(ctx context.Context, request string) (TurnResult, error) {
 		if err != nil {
 			return TurnResult{}, err
 		}
+		a.sink.Indicator(activity.Thinking)
 		events, err := a.provider.Chat(
 			streamContext,
 			a.model,
@@ -320,6 +335,7 @@ func (a *Agent) runTool(ctx context.Context, call provider.ToolCall) (string, er
 	if tierErr != nil {
 		return "tool error: " + tierErr.Error(), nil
 	}
+	a.sink.Indicator(activity.AwaitingApproval)
 	decision, err := a.approval.Decide(ctx, call.Name, declared)
 	if err != nil {
 		if contextErr := ctx.Err(); contextErr != nil {
@@ -330,12 +346,17 @@ func (a *Agent) runTool(ctx context.Context, call provider.ToolCall) (string, er
 	if !decision.Approved {
 		return fmt.Sprintf("The user rejected the %s tool call; it did not execute.", call.Name), nil
 	}
+	a.sink.Indicator(activity.Working)
+	before := a.tools.ChangeCount()
 	content, toolErr := a.tools.Execute(ctx, call.Name, call.Arguments)
 	if toolErr != nil {
 		if contextErr := ctx.Err(); contextErr != nil {
 			return "", fmt.Errorf("execute tool %q: %w", call.Name, contextErr)
 		}
 		content = "tool error: " + toolErr.Error()
+	}
+	for _, path := range a.tools.ChangesSince(before) {
+		a.sink.Change(activity.Change{Tool: call.Name, Path: path})
 	}
 	return content, nil
 }

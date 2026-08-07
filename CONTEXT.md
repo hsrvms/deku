@@ -209,6 +209,12 @@ The file changes a Turn introduces, surfaced to the user as they happen rather t
 
 ---
 
+## Activity Stream
+
+The Agent-to-display stream of Working Indicator transitions and change events that Deku emits during a Turn. The Agent is the only module that knows current Turn state, so it is the sole source of the stream; any renderer (the v1 terminal UI in particular) consumes it to show a Working Indicator and a live Turn Diff. The stream is emitted by the Agent, never by the CLI or a Tool.
+
+---
+
 ## Release
 
 A named distribution of Deku tied to one Source Revision. A Release consists of Release Artifacts and Release Metadata; publication status does not change which source or artifact bytes belong to it.
