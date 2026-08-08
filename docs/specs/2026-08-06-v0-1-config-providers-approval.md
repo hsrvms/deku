@@ -1,6 +1,6 @@
 # Near-term: configuration, provider selection, and approval transparency
 
-**Status:** proposed
+**Status:** Implemented; released as `v0.1.0`
 
 ## Problem Statement
 

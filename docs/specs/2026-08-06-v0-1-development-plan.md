@@ -1,6 +1,6 @@
 # v0.1 Development Plan — config, providers, approval transparency, activity seam
 
-**Status:** proposed
+**Status:** completed — all four phases delivered as `v0.1.0`
 **Spec:** `2026-08-06-v0-1-config-providers-approval.md`
 **ADRs:** 0007, 0008, 0009, 0010 (seam)
 
