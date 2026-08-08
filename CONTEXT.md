@@ -52,7 +52,7 @@ The recorded outcome of a Tool Call, returned by the Agent to the Model and reta
 
 ## Tool Output
 
-The Tool Result content echoed to the terminal after a Tool executes, regardless of the Tool's tier, so the user sees what ran on their machine rather than only what the Model reports. It is distinct from the Command Report, which precedes execution; Tool Output follows it.
+The Tool Result content echoed to the terminal when a Tool Call executes — or is refused before execution, so the user sees why a call did not run — regardless of the Tool's tier, so the user sees what ran on their machine rather than only what the Model reports. It is distinct from the Command Report, which precedes execution; Tool Output follows it, and for a refused call it is what the user sees instead of an execution. The echoed block names the Tool and its effective tier; the tier is omitted when the Tool is unknown, as for a refused call to an undeclared Tool.
 
 ---
 
@@ -337,4 +337,4 @@ The user's decision to load a Repository's Project Config and any project-local 
 
 ## Env Substitution
 
-The rule that a configuration value may reference the environment instead of holding a literal. A value of the form `${VAR}` is replaced with the value of the environment variable VAR; `${VAR:-default}` supplies a fallback when VAR is unset. A literal value always wins over a placeholder. The environment is a source of configuration values, not a separate precedence layer. Environment values are resolved from the real process environment first and, when absent, from the Deku Home `.env` file, so the process environment always wins over `.env`.
+The rule that a configuration value may reference the environment instead of holding a literal. A value of the form `${VAR}` is replaced with the value of the environment variable VAR; `${VAR:-default}` supplies a fallback when VAR is unset or empty. A literal value always wins over a placeholder. An unset `${VAR}` with no default is a configuration error at startup that names the variable and the field it appears in, so misconfiguration fails fast — with one deliberate exception: an Authentication API key that does not resolve is left empty, leaving its Provider declared but unable to authenticate, so a missing secret never blocks the other Providers. The environment is a source of configuration values, not a separate precedence layer. Environment values are resolved from the real process environment first and, when absent, from the Deku Home `.env` file, so the process environment always wins over `.env`.

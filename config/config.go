@@ -161,8 +161,11 @@ type lookup func(string) (string, bool)
 // project's files are never read. cfg.Project reports the project scope
 // outcome for the caller to surface.
 //
-// Returns an error when a module or .env file is malformed, or the trust
-// record is malformed.
+// Returns an error when a module or .env file is malformed, the trust
+// record is malformed, or a required value references an unset environment
+// placeholder with no default. The one deliberate exception is an
+// Authentication API key: an unresolvable key leaves its Provider declared
+// but unable to authenticate rather than failing startup (see resolvedAuth).
 func Load(projectRoot string) (*Config, error) {
 	home, err := os.UserHomeDir()
 	if err != nil {
@@ -237,15 +240,49 @@ func Load(projectRoot string) (*Config, error) {
 	}
 
 	if settings != nil {
-		cfg.Approval.Tools = settings.Approval.Tools
-		cfg.Approval.Defaults = settings.Approval.Defaults
-		cfg.RepoMap.Exclude = settings.RepoMap.Exclude
-		cfg.Selection.Provider = resolveOptional(settings.DefaultProvider, resolve)
-		cfg.Selection.Model = resolveOptional(settings.DefaultModel, resolve)
+		// Env Substitution applies to every value the loader consumes, not
+		// only the scalar fields: a placeholder in an Approval tier, an
+		// enforcement action, or a Repository Map exclusion must resolve
+		// here rather than fail later with an unrelated error.
+		tools, err := expandMapValues("settings.json approval.tools", settings.Approval.Tools, resolve)
+		if err != nil {
+			return nil, err
+		}
+		defaults, err := expandMapValues("settings.json approval.defaults", settings.Approval.Defaults, resolve)
+		if err != nil {
+			return nil, err
+		}
+		exclude, err := expandSliceValues("settings.json repo_map.exclude", settings.RepoMap.Exclude, resolve)
+		if err != nil {
+			return nil, err
+		}
+		cfg.Approval.Tools = tools
+		cfg.Approval.Defaults = defaults
+		cfg.RepoMap.Exclude = exclude
+		cfg.Selection.Provider, err = resolveOptional("settings.json default_provider", settings.DefaultProvider, resolve)
+		if err != nil {
+			return nil, err
+		}
+		cfg.Selection.Model, err = resolveOptional("settings.json default_model", settings.DefaultModel, resolve)
+		if err != nil {
+			return nil, err
+		}
 	}
-	cfg.AgentCommits.Mode = resolveString("off", moduleValue(settings, func(s *settingsFile) string { return s.AgentCommits.Mode }), envValue(resolve, envKeyAgentCommMode), resolve)
-	cfg.AgentCommits.Validation = resolveString("go test ./...", moduleValue(settings, func(s *settingsFile) string { return s.AgentCommits.Validation }), "", resolve)
-	cfg.Providers = declaredProviders(models, resolve)
+	mode, err := resolveRequired("settings.json agent_commits.mode", "off", moduleValue(settings, func(s *settingsFile) string { return s.AgentCommits.Mode }), envValue(resolve, envKeyAgentCommMode), resolve)
+	if err != nil {
+		return nil, err
+	}
+	cfg.AgentCommits.Mode = mode
+	validation, err := resolveRequired("settings.json agent_commits.validation", "go test ./...", moduleValue(settings, func(s *settingsFile) string { return s.AgentCommits.Validation }), "", resolve)
+	if err != nil {
+		return nil, err
+	}
+	cfg.AgentCommits.Validation = validation
+	providers, err := declaredProviders(models, resolve)
+	if err != nil {
+		return nil, err
+	}
+	cfg.Providers = providers
 	cfg.Auth = resolvedAuth(auth, resolve)
 
 	return cfg, nil
@@ -253,34 +290,58 @@ func Load(projectRoot string) (*Config, error) {
 
 // declaredProviders resolves the Provider Registry declaration from the
 // models module, filling each entry's Name from its map key and applying Env
-// Substitution to the base URL. A nil module yields no Providers.
-func declaredProviders(models *modelsFile, resolve lookup) map[string]provider.Provider {
+// Substitution to the base URL and every Model name. An unresolvable
+// placeholder is an error naming the variable. A nil module yields no
+// Providers.
+func declaredProviders(models *modelsFile, resolve lookup) (map[string]provider.Provider, error) {
 	if models == nil || len(models.Providers) == 0 {
-		return nil
+		return nil, nil
 	}
 	entries := make(map[string]provider.Provider, len(models.Providers))
 	for name, entry := range models.Providers {
 		entry.Name = name
-		entry.BaseURL = resolveOptional(entry.BaseURL, resolve)
+		baseURL, err := resolveOptional("models.json "+name+" base_url", entry.BaseURL, resolve)
+		if err != nil {
+			return nil, err
+		}
+		entry.BaseURL = baseURL
+		modelNames, err := expandSliceValues("models.json "+name+" models", entry.Models, resolve)
+		if err != nil {
+			return nil, err
+		}
+		entry.Models = modelNames
 		entries[name] = entry
 	}
-	return entries
+	return entries, nil
 }
 
 // resolvedAuth resolves the named credentials from the auth module, applying
-// Env Substitution to every API key. A key whose placeholder does not resolve
-// is kept empty: the Provider referencing it simply cannot authenticate until
-// the secret is supplied. A nil module yields no Authentication.
+// Env Substitution to every API key. A nil module yields no Authentication.
 func resolvedAuth(auth *authEntries, resolve lookup) map[string]provider.Authentication {
 	if auth == nil || len(*auth) == 0 {
 		return nil
 	}
 	entries := make(map[string]provider.Authentication, len(*auth))
 	for name, credential := range *auth {
-		credential.APIKey = resolveOptional(credential.APIKey, resolve)
+		credential.APIKey = resolveAuthKey(credential.APIKey, resolve)
 		entries[name] = credential
 	}
 	return entries
+}
+
+// resolveAuthKey applies Env Substitution to an Authentication API key. An
+// unresolvable placeholder yields "" rather than an error — the one
+// intentional exception to fail-fast substitution, per the v0.1 development
+// plan: an Authentication whose key does not resolve leaves its Provider
+// declared but unable to authenticate, so a missing secret never blocks the
+// other Providers. The Provider Registry reports the unauthenticatable
+// entry explicitly when it is selected.
+func resolveAuthKey(value string, resolve lookup) string {
+	resolved, err := expandValue(value, resolve)
+	if err != nil {
+		return ""
+	}
+	return resolved
 }
 
 // loadModule loads one optional module file named name from dir. An absent
@@ -385,38 +446,90 @@ func moduleValue[T any](m *T, pick func(*T) string) string {
 	return pick(m)
 }
 
-// resolveString applies Config Precedence and Env Substitution to an optional
-// string field. def is the built-in default; file is the module-source value;
-// env is the environment-as-source value.
-func resolveString(def, file, env string, resolve lookup) string {
+// resolveRequired applies Config Precedence and Env Substitution to a value
+// that carries a built-in default. source names the module and field for
+// error messages (for example "settings.json agent_commits.mode"); def is
+// the built-in default; file is the module-source value; env is the
+// environment-as-source value, which is literal and wins over both. An unset
+// ${VAR} with no default in the module value is an error naming the
+// variable: a placeholder the user wrote must never silently fall back to a
+// default they did not write.
+func resolveRequired(source, def, file, env string, resolve lookup) (string, error) {
 	// The environment-as-source layer is highest and holds a literal.
 	if env != "" {
-		return env
+		return env, nil
 	}
-	// Module layer, with Env Substitution. On an unresolvable placeholder the
-	// literal default overrides it.
 	if file != "" {
-		if resolved, err := expand(file, resolve); err == nil && resolved != "" {
-			return resolved
+		resolved, err := expand(file, resolve)
+		if err != nil {
+			return "", fmt.Errorf("%s: %w", source, err)
+		}
+		if resolved != "" {
+			return resolved, nil
 		}
 	}
-	return def
+	return def, nil
 }
 
 // resolveOptional applies Env Substitution to an optional value that has no
-// built-in default and no environment-as-source override. An unresolvable
-// placeholder yields "": the value is absent rather than a startup failure,
-// so an unset secret makes its Provider unauthenticatable instead of blocking
-// every other Provider.
-func resolveOptional(value string, resolve lookup) string {
-	if value == "" {
-		return ""
-	}
-	resolved, err := expand(value, resolve)
+// built-in default and no environment-as-source override. source names the
+// module and field for error messages. An unset ${VAR} with no default is an
+// error naming the variable: a placeholder that cannot resolve must fail
+// fast here rather than surface later as a misleading "requires a base URL"
+// or "no Provider or Model is selected" error.
+func resolveOptional(source, value string, resolve lookup) (string, error) {
+	resolved, err := expandValue(value, resolve)
 	if err != nil {
-		return ""
+		return "", fmt.Errorf("%s: %w", source, err)
 	}
-	return resolved
+	return resolved, nil
+}
+
+// expandValue applies Env Substitution to one configuration value, returning
+// the resolved literal or an error naming the unresolvable placeholder. It
+// is the shared expansion step for every value the loader consumes; callers
+// decide the error policy — resolveOptional fails fast, resolveAuthKey
+// deliberately discards the error (the one documented auth-key exception).
+func expandValue(value string, resolve lookup) (string, error) {
+	if value == "" {
+		return "", nil
+	}
+	return expand(value, resolve)
+}
+
+// expandMapValues applies Env Substitution to every value in m, returning an
+// error naming source and the affected key when a placeholder cannot
+// resolve. Keys are references, not values, and are left literal.
+func expandMapValues(source string, m map[string]string, resolve lookup) (map[string]string, error) {
+	if len(m) == 0 {
+		return m, nil
+	}
+	expanded := make(map[string]string, len(m))
+	for key, value := range m {
+		resolved, err := expand(value, resolve)
+		if err != nil {
+			return nil, fmt.Errorf("%s.%s: %w", source, key, err)
+		}
+		expanded[key] = resolved
+	}
+	return expanded, nil
+}
+
+// expandSliceValues applies Env Substitution to every entry in values,
+// returning an error naming source when a placeholder cannot resolve.
+func expandSliceValues(source string, values []string, resolve lookup) ([]string, error) {
+	if len(values) == 0 {
+		return values, nil
+	}
+	expanded := make([]string, len(values))
+	for index, value := range values {
+		resolved, err := expand(value, resolve)
+		if err != nil {
+			return nil, fmt.Errorf("%s[%d]: %w", source, index, err)
+		}
+		expanded[index] = resolved
+	}
+	return expanded, nil
 }
 
 // expand resolves Env Substitution placeholders in s: ${VAR} is replaced with

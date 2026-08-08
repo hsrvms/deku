@@ -81,23 +81,44 @@ type Repo struct {
 // contains dir, or "" when dir is not inside a Git repository. It locates the
 // project scope: Project Config lives in a .deku directory at the repository
 // top level, so the top level, not the current directory, is what matters.
+//
+// Only "not inside a Git repository" yields "", nil — the legitimate absence
+// of project scope. Any other failure to inspect the directory (Git
+// unavailable, a missing or unreadable directory, a malformed repository)
+// returns a contextual error, so a caller never silently runs without
+// project scope.
 func Root(dir string) (string, error) {
 	absolute, err := filepath.Abs(dir)
 	if err != nil {
 		return "", fmt.Errorf("resolve directory: %w", err)
 	}
 	cmd := exec.Command("git", "-C", absolute, "rev-parse", "--show-toplevel")
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
 	out, err := cmd.Output()
-	if err != nil {
-		// Not inside a Git repository, or Git is unavailable: there is no
-		// project scope.
+	if err == nil {
+		top := strings.TrimSpace(string(out))
+		if top == "" {
+			return "", nil
+		}
+		return filepath.Abs(top)
+	}
+	var exitErr *exec.ExitError
+	if !errors.As(err, &exitErr) {
+		// Git itself could not be started (for example it is not installed):
+		// a real failure, not an absent repository.
+		return "", fmt.Errorf("locate git repository for %q: %w", absolute, err)
+	}
+	// Only the exact legitimate absence message means "no project scope".
+	// Git's malformed-repository error also begins "not a git repository"
+	// ("fatal: not a git repository: /path/.git" when a .git gitdir file
+	// points nowhere), and that is a real failure the caller must see.
+	if strings.Contains(stderr.String(), "not a git repository (or any of the parent directories)") {
+		// Not inside a Git repository: there is legitimately no project
+		// scope.
 		return "", nil
 	}
-	top := strings.TrimSpace(string(out))
-	if top == "" {
-		return "", nil
-	}
-	return filepath.Abs(top)
+	return "", fmt.Errorf("locate git repository for %q: %w: %s", absolute, err, strings.TrimSpace(stderr.String()))
 }
 
 // New validates root and constructs a Repo backed by the Git repository there.

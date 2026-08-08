@@ -6,7 +6,10 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"strings"
 	"testing"
+
+	"github.com/hsrvms/deku/provider"
 )
 
 func TestStoreCreatesAppendsAndResumesSession(t *testing.T) {
@@ -146,6 +149,38 @@ func splitJSONLines(data []byte) [][]byte {
 	return lines
 }
 
+func TestSessionSelectionWireShapeIsPinned(t *testing.T) {
+	// The Session transcript's Selection record is part of the JSONL wire
+	// format and must stay byte-stable across resumes and releases. This
+	// pins the exact record line, so a future tag change on the recorded
+	// Selection type fails loudly instead of silently changing the resume
+	// format.
+	store, err := NewStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewStore() error = %v", err)
+	}
+	created, err := store.Create()
+	if err != nil {
+		t.Fatalf("Create() error = %v", err)
+	}
+	if err := created.RecordSelection(provider.Selection{Provider: "openrouter", Model: "model-a"}); err != nil {
+		t.Fatalf("RecordSelection() error = %v", err)
+	}
+
+	data, err := os.ReadFile(created.Path())
+	if err != nil {
+		t.Fatalf("ReadFile() error = %v", err)
+	}
+	lines := strings.Split(strings.TrimRight(string(data), "\n"), "\n")
+	if len(lines) != 1 {
+		t.Fatalf("session lines = %d, want exactly the selection record", len(lines))
+	}
+	want := `{"type":"selection","selection":{"provider":"openrouter","model":"model-a"}}`
+	if lines[0] != want {
+		t.Errorf("selection record = %q, want %q", lines[0], want)
+	}
+}
+
 func TestSessionRecordsAndRestoresSelection(t *testing.T) {
 	store, err := NewStore(t.TempDir())
 	if err != nil {
@@ -158,13 +193,13 @@ func TestSessionRecordsAndRestoresSelection(t *testing.T) {
 	if err := created.Append(Message{Role: RoleUser, Content: "hello"}); err != nil {
 		t.Fatalf("Append() error = %v", err)
 	}
-	if err := created.RecordSelection(Selection{Provider: "openrouter", Model: "model-a"}); err != nil {
+	if err := created.RecordSelection(provider.Selection{Provider: "openrouter", Model: "model-a"}); err != nil {
 		t.Fatalf("RecordSelection() error = %v", err)
 	}
 
 	// The in-memory session reports the override immediately.
 	got, ok := created.LatestSelection()
-	if !ok || got != (Selection{Provider: "openrouter", Model: "model-a"}) {
+	if !ok || got != (provider.Selection{Provider: "openrouter", Model: "model-a"}) {
 		t.Errorf("LatestSelection() = %#v, %v; want the recorded override", got, ok)
 	}
 
@@ -177,7 +212,7 @@ func TestSessionRecordsAndRestoresSelection(t *testing.T) {
 		t.Errorf("resumed messages = %#v, want only the conversation message", resumed.Messages)
 	}
 	got, ok = resumed.LatestSelection()
-	if !ok || got != (Selection{Provider: "openrouter", Model: "model-a"}) {
+	if !ok || got != (provider.Selection{Provider: "openrouter", Model: "model-a"}) {
 		t.Errorf("resumed LatestSelection() = %#v, %v; want the override restored", got, ok)
 	}
 }
@@ -191,10 +226,10 @@ func TestSessionLatestSelectionIsTheLastRecorded(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Create() error = %v", err)
 	}
-	if err := created.RecordSelection(Selection{Provider: "first", Model: "model-a"}); err != nil {
+	if err := created.RecordSelection(provider.Selection{Provider: "first", Model: "model-a"}); err != nil {
 		t.Fatalf("RecordSelection() error = %v", err)
 	}
-	if err := created.RecordSelection(Selection{Provider: "second", Model: "model-b"}); err != nil {
+	if err := created.RecordSelection(provider.Selection{Provider: "second", Model: "model-b"}); err != nil {
 		t.Fatalf("RecordSelection() error = %v", err)
 	}
 
@@ -203,7 +238,7 @@ func TestSessionLatestSelectionIsTheLastRecorded(t *testing.T) {
 		t.Fatalf("Resume() error = %v", err)
 	}
 	got, ok := resumed.LatestSelection()
-	if !ok || got != (Selection{Provider: "second", Model: "model-b"}) {
+	if !ok || got != (provider.Selection{Provider: "second", Model: "model-b"}) {
 		t.Errorf("LatestSelection() = %#v, %v; want the last recorded override", got, ok)
 	}
 }
@@ -220,7 +255,7 @@ func TestSessionSelectionInterleavesWithMessages(t *testing.T) {
 	if err := created.Append(Message{Role: RoleUser, Content: "first"}); err != nil {
 		t.Fatalf("Append() error = %v", err)
 	}
-	if err := created.RecordSelection(Selection{Provider: "other", Model: "model-x"}); err != nil {
+	if err := created.RecordSelection(provider.Selection{Provider: "other", Model: "model-x"}); err != nil {
 		t.Fatalf("RecordSelection() error = %v", err)
 	}
 	if err := created.Append(Message{Role: RoleAssistant, Content: "second"}); err != nil {
@@ -248,7 +283,7 @@ func TestSessionRecordSelectionValidates(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Create() error = %v", err)
 	}
-	for _, invalid := range []Selection{
+	for _, invalid := range []provider.Selection{
 		{},
 		{Provider: "provider-only"},
 		{Model: "model-only"},

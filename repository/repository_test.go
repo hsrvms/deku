@@ -128,14 +128,64 @@ func TestRootOutsideRepositoryIsEmpty(t *testing.T) {
 	}
 }
 
-func TestRootMissingDirectoryIsEmpty(t *testing.T) {
+func TestRootMissingDirectoryIsError(t *testing.T) {
+	// A missing directory is not "no project scope": it is a failure to
+	// inspect the directory and must surface as an error so a caller never
+	// silently runs without project scope.
 	missing := filepath.Join(t.TempDir(), "nope")
-	got, err := Root(missing)
-	if err != nil {
-		t.Fatalf("Root() error = %v", err)
+	if _, err := Root(missing); err == nil {
+		t.Fatal("Root() on a missing directory should error")
 	}
-	if got != "" {
-		t.Errorf("Root() = %q, want empty for a missing directory", got)
+}
+
+func TestRootMalformedRepoIsError(t *testing.T) {
+	// A malformed repository — a .git gitdir file pointing nowhere — is a
+	// real failure, not an absent project scope: git's error here also
+	// begins "not a git repository", so the discriminator must match only
+	// the legitimate absence phrase and surface this as a contextual error.
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, ".git"), []byte("gitdir: /nonexistent/.git\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err := Root(dir)
+	if err == nil {
+		t.Fatal("Root() on a malformed repository should error")
+	}
+	if !strings.Contains(err.Error(), "not a git repository") {
+		t.Errorf("error = %q, want git's stderr in the contextual error", err)
+	}
+}
+
+func TestRootGitUnavailableIsError(t *testing.T) {
+	// Git being unavailable is a real failure, not an absent project scope.
+	dir := t.TempDir()
+	t.Setenv("PATH", t.TempDir())
+
+	if _, err := Root(dir); err == nil {
+		t.Fatal("Root() with git unavailable should error")
+	}
+}
+
+func TestRootGitFailureIsContextual(t *testing.T) {
+	// A Git failure that is not "not a repository" — here a fake git that
+	// fails for another reason — is a real failure and must surface with the
+	// contextual stderr instead of silently reporting no project scope.
+	dir := t.TempDir()
+	bin := t.TempDir()
+	fakeGit := filepath.Join(bin, "git")
+	script := "#!/bin/sh\necho 'fatal: detected dubious ownership' >&2\nexit 128\n"
+	if err := os.WriteFile(fakeGit, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", bin)
+
+	_, err := Root(dir)
+	if err == nil {
+		t.Fatal("Root() should error when git fails for a reason other than not-a-repository")
+	}
+	if !strings.Contains(err.Error(), "dubious ownership") {
+		t.Errorf("error = %q, want it to include git's stderr", err)
 	}
 }
 

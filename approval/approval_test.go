@@ -8,6 +8,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/hsrvms/deku/lineio"
 )
 
 // request builds a Decision Request carrying a rendered Command Report, as the
@@ -162,11 +164,11 @@ func TestGateWarnsAndPromptsDestructiveTool(t *testing.T) {
 }
 
 func TestIsTerminalDetectsOnlyCharacterDevices(t *testing.T) {
-	if isTerminal(&bytes.Buffer{}) {
-		t.Error("isTerminal(buffer) = true, want false")
+	if lineio.IsTerminal(&bytes.Buffer{}) {
+		t.Error("IsTerminal(buffer) = true, want false")
 	}
-	if isTerminal(io.Discard) {
-		t.Error("isTerminal(io.Discard) = true, want false")
+	if lineio.IsTerminal(io.Discard) {
+		t.Error("IsTerminal(io.Discard) = true, want false")
 	}
 }
 

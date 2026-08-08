@@ -186,7 +186,7 @@ func TestSetSelectionRecordsOverrideInSession(t *testing.T) {
 	if !ok {
 		t.Fatal("resumed session has no recorded Selection override")
 	}
-	if got != (session.Selection{Provider: "second", Model: "model-b"}) {
+	if got != (provider.Selection{Provider: "second", Model: "model-b"}) {
 		t.Errorf("resumed override = %#v, want the recorded Selection", got)
 	}
 

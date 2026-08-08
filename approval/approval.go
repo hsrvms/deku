@@ -163,8 +163,14 @@ type Request struct {
 
 // Decider is the synchronous approval gate the Agent relies on. Decide reports
 // whether a tool call may proceed; it blocks until the user responds when the
-// tool's effective tier requires Approval.
+// tool's effective tier requires Approval. WillPrompt reports whether a
+// decision on request will pause for a user prompt at all, so the Agent can
+// emit the awaiting-approval Working Indicator only when the loop actually
+// pauses — an auto-approved call never pauses and must not claim to.
+// Implementations must answer WillPrompt without side effects and before
+// Decide.
 type Decider interface {
+	WillPrompt(request Request) bool
 	Decide(ctx context.Context, request Request) (Decision, error)
 }
 
@@ -190,10 +196,23 @@ func NewGate(policy Policy, input io.Reader, output io.Writer) *Gate {
 	if output == nil {
 		output = io.Discard
 	}
-	return &Gate{policy: policy, input: input, output: output, color: isTerminal(output)}
+	return &Gate{policy: policy, input: input, output: output, color: lineio.IsTerminal(output)}
 }
 
 var _ Decider = (*Gate)(nil)
+
+// WillPrompt reports whether a decision on request will pause for a user
+// prompt under the Gate's policy: the effective tier's enforcement action is
+// Prompt. An auto-approved call answers false, so the Agent emits the
+// awaiting-approval Working Indicator only when the loop actually pauses for
+// a user decision.
+func (g *Gate) WillPrompt(request Request) bool {
+	if g == nil {
+		return false
+	}
+	tier := g.policy.EffectiveTier(request.Declared, request.ToolName)
+	return g.policy.Action(tier) == Prompt
+}
 
 // Decide applies the policy to a tool call and, when the effective tier
 // requires prompting, asks the user to approve or reject before returning. The
@@ -367,18 +386,3 @@ const (
 	ansiGreen = "\x1b[32m"
 	ansiCyan  = "\x1b[36m"
 )
-
-// isTerminal reports whether w is a terminal character device. The Gate styles
-// its Command Report only for a terminal so captured or piped output stays
-// plain.
-func isTerminal(w io.Writer) bool {
-	file, ok := w.(*os.File)
-	if !ok {
-		return false
-	}
-	info, err := file.Stat()
-	if err != nil {
-		return false
-	}
-	return info.Mode()&os.ModeCharDevice != 0
-}
