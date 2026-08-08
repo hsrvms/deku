@@ -1,9 +1,9 @@
 # syntax=docker/dockerfile:1.7
 
 # Keep runtime versions explicit so upgrades are reviewable and cached independently.
-ARG GO_IMAGE=golang:1.26.5-bookworm
-ARG NODE_IMAGE=node:24.18.0-bookworm-slim
-ARG DEBIAN_IMAGE=debian:bookworm-slim
+ARG GO_IMAGE=golang:1.26.5-trixie
+ARG NODE_IMAGE=node:24.18.0-trixie-slim
+ARG DEBIAN_IMAGE=debian:trixie-slim
 
 FROM ${GO_IMAGE} AS go-tools
 ENV CGO_ENABLED=0 \
@@ -49,7 +49,6 @@ RUN apt-get update \
         curl \
         fd-find \
         gcc \
-        gh \
         git \
         vim \
         iproute2 \
@@ -78,6 +77,14 @@ RUN apt-get update \
         'export GOTOOLCHAIN=local' \
         'export PATH=/usr/local/go/bin:/go/bin:/usr/local/bin:/usr/local/sbin:/usr/sbin:/usr/bin:/sbin:/bin' \
         > /etc/profile.d/devcontainer.sh
+
+# gh is not installed from apt: even trixie ships 2.46.0 (2024). Install the
+# official release .deb instead, pinned to the latest version.
+ARG GH_VERSION=v2.97.0
+RUN ARCH=$(dpkg --print-architecture) \
+    && curl -fsSL -o /tmp/gh.deb "https://github.com/cli/cli/releases/download/${GH_VERSION}/gh_${GH_VERSION#v}_linux_${ARCH}.deb" \
+    && apt-get install --yes --no-install-recommends /tmp/gh.deb \
+    && rm /tmp/gh.deb
 
 COPY --from=go-tools /usr/local/go/ /usr/local/go/
 COPY --from=go-tools /go/bin/ /usr/local/bin/
