@@ -44,7 +44,7 @@ After publication, verify the downloaded bytes rather than trusting the workflow
 1. Download the Release assets:
 
    ```sh
-   VERSION=0.0.2
+   VERSION=0.1.0
    tmpdir=$(mktemp -d)
    gh release download "v${VERSION}" --repo hsrvms/deku --dir "$tmpdir"
    ```

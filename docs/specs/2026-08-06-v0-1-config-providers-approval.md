@@ -2,6 +2,8 @@
 
 **Status:** Implemented; released as `v0.1.0`
 
+**Implementation record:** The v0.1 milestone (all four phases of the development plan: JSON configuration and Project Trust, Provider Registry and Selection, Approval transparency, and the activity seam) shipped as `v0.1.0` from source revision `b252c0369c821947482614bbb2107647e51077f2` on 2026-08-08. The protected-tag run completed tagged-source verification, all five platform builds, packaging, checksum validation, provenance attestation, protected-environment approval, and GitHub Release publication. Post-release checks confirmed all five archive checksums, the release binary's `--version` output, and GitHub artifact attestations for every archive.
+
 ## Problem Statement
 
 Deku currently binds one OpenAI-compatible Provider to a single Model at startup through one YAML file plus a handful of environment variables, and its Approval prompts name a Tool's category without showing what the Tool will actually do. A developer who uses several model endpoints — subscriptions and custom URL+key Providers such as tokenrouter, openrouter, and qwencloud — cannot configure or switch between them, and a gated command or Edit is approved blind.
