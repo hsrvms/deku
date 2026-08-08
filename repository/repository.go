@@ -109,7 +109,11 @@ func Root(dir string) (string, error) {
 		// a real failure, not an absent repository.
 		return "", fmt.Errorf("locate git repository for %q: %w", absolute, err)
 	}
-	if strings.Contains(stderr.String(), "not a git repository") {
+	// Only the exact legitimate absence message means "no project scope".
+	// Git's malformed-repository error also begins "not a git repository"
+	// ("fatal: not a git repository: /path/.git" when a .git gitdir file
+	// points nowhere), and that is a real failure the caller must see.
+	if strings.Contains(stderr.String(), "not a git repository (or any of the parent directories)") {
 		// Not inside a Git repository: there is legitimately no project
 		// scope.
 		return "", nil

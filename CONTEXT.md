@@ -52,7 +52,7 @@ The recorded outcome of a Tool Call, returned by the Agent to the Model and reta
 
 ## Tool Output
 
-The Tool Result content echoed to the terminal after a Tool executes, regardless of the Tool's tier, so the user sees what ran on their machine rather than only what the Model reports. It is distinct from the Command Report, which precedes execution; Tool Output follows it.
+The Tool Result content echoed to the terminal when a Tool Call executes — or is refused before execution, so the user sees why a call did not run — regardless of the Tool's tier, so the user sees what ran on their machine rather than only what the Model reports. It is distinct from the Command Report, which precedes execution; Tool Output follows it, and for a refused call it is what the user sees instead of an execution. The echoed block names the Tool and its effective tier; the tier is omitted when the Tool is unknown, as for a refused call to an undeclared Tool.
 
 ---
 

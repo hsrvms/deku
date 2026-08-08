@@ -356,17 +356,15 @@ func (t *commandTool) Tier() approval.Tier { return approval.Destructive }
 // Execute share it, so a call whose Report rendered successfully is never
 // rejected by different rules at execution time.
 func (t *commandTool) validate(raw json.RawMessage) (commandArguments, error) {
-	var arguments commandArguments
-	if err := decodeArguments(raw, &arguments); err != nil {
-		return commandArguments{}, fmt.Errorf("command arguments: %w", err)
-	}
-	if strings.TrimSpace(arguments.Command) == "" {
-		return commandArguments{}, errors.New("command is required")
-	}
-	if arguments.Timeout < 0 {
-		return commandArguments{}, errors.New("command timeout must be positive")
-	}
-	return arguments, nil
+	return decodeInto(raw, "command", func(a commandArguments) error {
+		if strings.TrimSpace(a.Command) == "" {
+			return errors.New("command is required")
+		}
+		if a.Timeout < 0 {
+			return errors.New("command timeout must be positive")
+		}
+		return nil
+	})
 }
 
 func (t *commandTool) Report(raw json.RawMessage) (string, error) {
@@ -500,22 +498,20 @@ func (t *editTool) Tier() approval.Tier { return approval.Write }
 // Execute share it, so a call whose Report rendered successfully is never
 // rejected by different rules at execution time.
 func (t *editTool) validate(raw json.RawMessage) (editArguments, error) {
-	var arguments editArguments
-	if err := decodeArguments(raw, &arguments); err != nil {
-		return editArguments{}, fmt.Errorf("edit arguments: %w", err)
-	}
-	if strings.TrimSpace(arguments.Path) == "" {
-		return editArguments{}, errors.New("path is required")
-	}
-	if len(arguments.Edits) == 0 {
-		return editArguments{}, errors.New("edit requires at least one replacement")
-	}
-	for index, change := range arguments.Edits {
-		if strings.TrimSpace(change.OldText) == "" {
-			return editArguments{}, fmt.Errorf("edit %d: oldText is required", index+1)
+	return decodeInto(raw, "edit", func(a editArguments) error {
+		if strings.TrimSpace(a.Path) == "" {
+			return errors.New("path is required")
 		}
-	}
-	return arguments, nil
+		if len(a.Edits) == 0 {
+			return errors.New("edit requires at least one replacement")
+		}
+		for index, change := range a.Edits {
+			if strings.TrimSpace(change.OldText) == "" {
+				return fmt.Errorf("edit %d: oldText is required", index+1)
+			}
+		}
+		return nil
+	})
 }
 
 func (t *editTool) Report(raw json.RawMessage) (string, error) {
@@ -567,14 +563,12 @@ func (t *writeTool) Tier() approval.Tier { return approval.Write }
 // Execute share it, so a call whose Report rendered successfully is never
 // rejected by different rules at execution time.
 func (t *writeTool) validate(raw json.RawMessage) (writeArguments, error) {
-	var arguments writeArguments
-	if err := decodeArguments(raw, &arguments); err != nil {
-		return writeArguments{}, fmt.Errorf("write arguments: %w", err)
-	}
-	if strings.TrimSpace(arguments.Path) == "" {
-		return writeArguments{}, errors.New("path is required")
-	}
-	return arguments, nil
+	return decodeInto(raw, "write", func(a writeArguments) error {
+		if strings.TrimSpace(a.Path) == "" {
+			return errors.New("path is required")
+		}
+		return nil
+	})
 }
 
 func (t *writeTool) Report(raw json.RawMessage) (string, error) {
@@ -651,15 +645,11 @@ func (t *writeTool) Execute(ctx context.Context, raw json.RawMessage) (string, e
 
 func (t *lsTool) Tier() approval.Tier { return approval.Read }
 
-// validate decodes the arguments for one call. Report and Execute share it,
-// so a call whose Report rendered successfully is never rejected by
-// different rules at execution time.
+// validate decodes and validates the arguments for one call. Report and
+// Execute share it, so a call whose Report rendered successfully is never
+// rejected by different rules at execution time.
 func (t *lsTool) validate(raw json.RawMessage) (lsArguments, error) {
-	var arguments lsArguments
-	if err := decodeArguments(raw, &arguments); err != nil {
-		return lsArguments{}, fmt.Errorf("ls arguments: %w", err)
-	}
-	return arguments, nil
+	return decodeInto[lsArguments](raw, "ls", nil)
 }
 
 func (t *lsTool) Report(raw json.RawMessage) (string, error) {
@@ -679,17 +669,15 @@ func (t *readTool) Tier() approval.Tier { return approval.Read }
 // Execute share it, so a call whose Report rendered successfully is never
 // rejected by different rules at execution time.
 func (t *readTool) validate(raw json.RawMessage) (readArguments, error) {
-	var arguments readArguments
-	if err := decodeArguments(raw, &arguments); err != nil {
-		return readArguments{}, fmt.Errorf("read arguments: %w", err)
-	}
-	if strings.TrimSpace(arguments.Path) == "" {
-		return readArguments{}, errors.New("path is required")
-	}
-	if (arguments.StartLine != nil && *arguments.StartLine < 1) || (arguments.EndLine != nil && *arguments.EndLine < 1) {
-		return readArguments{}, errors.New("line numbers must be positive")
-	}
-	return arguments, nil
+	return decodeInto(raw, "read", func(a readArguments) error {
+		if strings.TrimSpace(a.Path) == "" {
+			return errors.New("path is required")
+		}
+		if (a.StartLine != nil && *a.StartLine < 1) || (a.EndLine != nil && *a.EndLine < 1) {
+			return errors.New("line numbers must be positive")
+		}
+		return nil
+	})
 }
 
 func (t *readTool) Report(raw json.RawMessage) (string, error) {
@@ -715,14 +703,12 @@ func (t *grepTool) Tier() approval.Tier { return approval.Read }
 // Execute share it, so a call whose Report rendered successfully is never
 // rejected by different rules at execution time.
 func (t *grepTool) validate(raw json.RawMessage) (grepArguments, error) {
-	var arguments grepArguments
-	if err := decodeArguments(raw, &arguments); err != nil {
-		return grepArguments{}, fmt.Errorf("grep arguments: %w", err)
-	}
-	if strings.TrimSpace(arguments.Pattern) == "" {
-		return grepArguments{}, errors.New("grep pattern is required")
-	}
-	return arguments, nil
+	return decodeInto(raw, "grep", func(a grepArguments) error {
+		if strings.TrimSpace(a.Pattern) == "" {
+			return errors.New("grep pattern is required")
+		}
+		return nil
+	})
 }
 
 func (t *grepTool) Report(raw json.RawMessage) (string, error) {
@@ -1058,6 +1044,25 @@ func decodeArguments(raw json.RawMessage, target any) error {
 		return err
 	}
 	return nil
+}
+
+// decodeInto decodes the arguments for one call into a fresh value of type T
+// and runs check on it. name labels decode errors with the tool name (for
+// example "command arguments: …"). Report and Execute share the result, so
+// a call whose Report rendered successfully is never rejected by different
+// rules at execution time.
+func decodeInto[T any](raw json.RawMessage, name string, check func(T) error) (T, error) {
+	var arguments T
+	if err := decodeArguments(raw, &arguments); err != nil {
+		return arguments, fmt.Errorf("%s arguments: %w", name, err)
+	}
+	if check == nil {
+		return arguments, nil
+	}
+	if err := check(arguments); err != nil {
+		return arguments, err
+	}
+	return arguments, nil
 }
 
 func objectSchema(properties map[string]any, required ...string) map[string]any {

@@ -138,6 +138,25 @@ func TestRootMissingDirectoryIsError(t *testing.T) {
 	}
 }
 
+func TestRootMalformedRepoIsError(t *testing.T) {
+	// A malformed repository — a .git gitdir file pointing nowhere — is a
+	// real failure, not an absent project scope: git's error here also
+	// begins "not a git repository", so the discriminator must match only
+	// the legitimate absence phrase and surface this as a contextual error.
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, ".git"), []byte("gitdir: /nonexistent/.git\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err := Root(dir)
+	if err == nil {
+		t.Fatal("Root() on a malformed repository should error")
+	}
+	if !strings.Contains(err.Error(), "not a git repository") {
+		t.Errorf("error = %q, want git's stderr in the contextual error", err)
+	}
+}
+
 func TestRootGitUnavailableIsError(t *testing.T) {
 	// Git being unavailable is a real failure, not an absent project scope.
 	dir := t.TempDir()

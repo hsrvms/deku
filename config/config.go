@@ -337,10 +337,7 @@ func resolvedAuth(auth *authEntries, resolve lookup) map[string]provider.Authent
 // other Providers. The Provider Registry reports the unauthenticatable
 // entry explicitly when it is selected.
 func resolveAuthKey(value string, resolve lookup) string {
-	if value == "" {
-		return ""
-	}
-	resolved, err := expand(value, resolve)
+	resolved, err := expandValue(value, resolve)
 	if err != nil {
 		return ""
 	}
@@ -481,14 +478,23 @@ func resolveRequired(source, def, file, env string, resolve lookup) (string, err
 // fast here rather than surface later as a misleading "requires a base URL"
 // or "no Provider or Model is selected" error.
 func resolveOptional(source, value string, resolve lookup) (string, error) {
-	if value == "" {
-		return "", nil
-	}
-	resolved, err := expand(value, resolve)
+	resolved, err := expandValue(value, resolve)
 	if err != nil {
 		return "", fmt.Errorf("%s: %w", source, err)
 	}
 	return resolved, nil
+}
+
+// expandValue applies Env Substitution to one configuration value, returning
+// the resolved literal or an error naming the unresolvable placeholder. It
+// is the shared expansion step for every value the loader consumes; callers
+// decide the error policy — resolveOptional fails fast, resolveAuthKey
+// deliberately discards the error (the one documented auth-key exception).
+func expandValue(value string, resolve lookup) (string, error) {
+	if value == "" {
+		return "", nil
+	}
+	return expand(value, resolve)
 }
 
 // expandMapValues applies Env Substitution to every value in m, returning an

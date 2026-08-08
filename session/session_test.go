@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"strings"
 	"testing"
 
 	"github.com/hsrvms/deku/provider"
@@ -146,6 +147,38 @@ func splitJSONLines(data []byte) [][]byte {
 		}
 	}
 	return lines
+}
+
+func TestSessionSelectionWireShapeIsPinned(t *testing.T) {
+	// The Session transcript's Selection record is part of the JSONL wire
+	// format and must stay byte-stable across resumes and releases. This
+	// pins the exact record line, so a future tag change on the recorded
+	// Selection type fails loudly instead of silently changing the resume
+	// format.
+	store, err := NewStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewStore() error = %v", err)
+	}
+	created, err := store.Create()
+	if err != nil {
+		t.Fatalf("Create() error = %v", err)
+	}
+	if err := created.RecordSelection(provider.Selection{Provider: "openrouter", Model: "model-a"}); err != nil {
+		t.Fatalf("RecordSelection() error = %v", err)
+	}
+
+	data, err := os.ReadFile(created.Path())
+	if err != nil {
+		t.Fatalf("ReadFile() error = %v", err)
+	}
+	lines := strings.Split(strings.TrimRight(string(data), "\n"), "\n")
+	if len(lines) != 1 {
+		t.Fatalf("session lines = %d, want exactly the selection record", len(lines))
+	}
+	want := `{"type":"selection","selection":{"provider":"openrouter","model":"model-a"}}`
+	if lines[0] != want {
+		t.Errorf("selection record = %q, want %q", lines[0], want)
+	}
 }
 
 func TestSessionRecordsAndRestoresSelection(t *testing.T) {
