@@ -47,6 +47,7 @@ Use the platform's equivalent checksum and archive tools where `sha256sum`, `tar
 
 - [Vision](docs/vision.md)
 - [Roadmap](docs/roadmap.md)
+- [Configuration reference](docs/reference/configuration.md)
 - [Specifications](docs/specs/README.md)
 - [Architecture decisions](docs/adr/)
 - [Domain glossary](CONTEXT.md)
@@ -93,26 +94,17 @@ that references an unknown Authentication, declares an unsupported Adapter
 family, or omits its base URL or Models fails fast with an explicit error —
 and when no Provider and Model are selected.
 
-Secrets and endpoints can also live in a Deku Home `.env` file, auto-loaded at
-startup:
+The full configuration reference — every option, its default, Config
+Precedence, Env Substitution, Project Trust, the `/model` command, and a
+complete defaulted example — is in
+[`docs/reference/configuration.md`](docs/reference/configuration.md).
 
-```sh
-cat > ~/.deku/.env <<'EOF'
-OPENAI_API_KEY=your-api-key
-EOF
-```
-
-Configuration is resolved in Config Precedence order — built-in **defaults**, then the Deku Home **modules**, then the **Project Config** of the Repository you run Deku from, then the environment as the highest source: real process environment variables win over the `.env` file, which wins over the module files. Every value in a module file may reference the environment with Env Substitution: `${VAR}` resolves the variable (from the process environment or the `.env` file), and `${VAR:-default}` falls back when it is unset or empty:
-
-```json
-{
-  "openai": { "type": "api_key", "api_key": "${OPENAI_API_KEY}" }
-}
-```
-
-An Authentication whose key does not resolve leaves its Provider declared but
-unable to authenticate: it is excluded from Selection, and Deku reports
-explicitly when the selected Provider cannot authenticate.
+In brief: secrets and endpoints live in the Deku Home `.env` file or the
+process environment and are referenced from the module files with Env
+Substitution (`${VAR}` / `${VAR:-default}`); the active Provider/Model is a
+**Selection** driven by `defaultProvider`/`defaultModel` and switchable at
+runtime with `/model`; and a repository's own `.deku/` Project Config is
+loaded only after you grant the project Trust.
 
 ### Provider selection
 
@@ -144,35 +136,12 @@ modules under a `.deku/` directory at the repository top level:
 
 Project Config is loaded **only after you grant the project Trust**. When you
 run Deku interactively in a repository that carries Project Config, Deku asks
-whether to trust the project:
-
-```
-deku: project config found at /path/to/repository/.deku
-Trust this project? [y/N]
-```
-
-Answering `y` records the repository root in `~/.deku/trusted_projects.json`
-automatically and loads the Project Config; answering `n`, or running with
-piped input, ignores it — an untrusted repository is never trusted without
-your explicit consent. You can also grant Trust ahead of time by listing the
-repository's absolute path in the file:
-
-```json
-{
-  "projects": ["/path/to/repository"]
-}
-```
-
-An untrusted repository is ignored entirely: its configuration files are
-never read, so they cannot change your Approval policy or any other setting.
-The Trust decision is deterministic — a repository is trusted only when its
-absolute path matches a listed path exactly (after path cleaning); an absent
-or empty trust record trusts nothing.
-
-Deku reports the project scope at startup, so you always know whether
-project-scope configuration is in effect: it prints `project config loaded
-from <root>/.deku` when a trusted project's modules apply, or a notice that
-Project Config was found but ignored because the project is not trusted.
+whether to trust the project; a `yes` answer records the repository root in
+`~/.deku/trusted_projects.json` and reloads configuration. Non-interactive runs
+never prompt and never trust. An **untrusted repository is ignored entirely**:
+its configuration files are never read, so they cannot change your Approval
+policy or other settings. Deku reports the project scope at startup, so you
+always know whether project-scope configuration is in effect.
 
 Under Config Precedence, a trusted project's module **replaces** the Deku Home
 module of the same name as a whole, rather than merging field-by-field: a
