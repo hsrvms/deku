@@ -89,6 +89,17 @@ For every change, perform a documentation-impact review before completion:
 
 Mention documentation files changed—or explicitly state why none were needed—in the final work summary.
 
+## GitHub
+
+When the user asks about GitHub — implementing an issue, creating or examining a pull request, or any other GitHub workflow — use the GitHub CLI (`gh`) rather than the web UI or hand-written API calls:
+
+- Read issues and PRs with `gh issue view`, `gh issue list`, `gh pr view`, `gh pr list`, `gh pr diff`, `gh pr status`, and `gh pr checks`.
+- Implement an issue on a dedicated branch (`gh issue develop <number>` or `git checkout -b`), then push the branch and open the PR with `gh pr create`.
+- Examine a PR locally with `gh pr checkout <number>`; submit reviews with `gh pr review`.
+- Keep PRs small and focused on the issue they close, and link them with `Closes #<number>`.
+
+Asking for PR work is an explicit request to push its branch; do not push otherwise.
+
 ## Git Discipline
 
 - Never commit, push, or rewrite history unless the user explicitly asks.
