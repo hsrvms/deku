@@ -1,8 +1,10 @@
 # Release and CD Publishing
 
-**Status:** Implemented; `v0.0.2` published successfully from a protected tag
+**Status:** Implemented; `v0.0.2` and `v0.1.0` published successfully from protected tags
 
 **Implementation record:** The first protected-tag run published `v0.0.2` from source revision `4ed5583753a3639aa11b3edb6c541b85c123eb17` on 2026-08-03. The run completed tagged-source verification, all five platform builds, packaging, checksum validation, provenance attestation, protected-environment approval, and GitHub Release publication. Post-release checks confirmed all five archive checksums, archive-root executable layout, the release binary's `--version` output, and GitHub artifact attestations for every archive.
+
+The v0.1 milestone published as `v0.1.0` from source revision `b252c0369c821947482614bbb2107647e51077f2` on 2026-08-08 through the same verified pipeline.
 
 **Scope:** Versioned distribution of the Deku CLI from protected source tags.
 
