@@ -240,6 +240,9 @@ func TestAgentEditToolFailureLeavesFileUnchanged(t *testing.T) {
 	if string(got) != original {
 		t.Errorf("file mutated after failed edit = %q, want %q", got, original)
 	}
+	if !strings.Contains(output.String(), "Tool output (edit, write):") || !strings.Contains(output.String(), "tool error:") {
+		t.Errorf("output = %q, want failed edit tool output echoed to the terminal", output.String())
+	}
 	toolResult := conversation.Messages[2]
 	if toolResult.Role != session.RoleTool || toolResult.Content == "" {
 		t.Errorf("failed edit tool result = %#v", toolResult)
@@ -285,6 +288,9 @@ func TestAgentGatesWriteToolBehindApproval(t *testing.T) {
 	}
 	if !strings.Contains(output.String(), "Approve?") {
 		t.Errorf("output = %q, want approval prompt", output.String())
+	}
+	if !strings.Contains(output.String(), "Tool output (edit, write):") || !strings.Contains(output.String(), "  Applied 1 replacement(s) to main.go.") {
+		t.Errorf("output = %q, want edit tool output echoed to the terminal", output.String())
 	}
 	got, err := os.ReadFile(file)
 	if err != nil {
@@ -340,6 +346,9 @@ func TestAgentSkipsWriteToolWhenRejected(t *testing.T) {
 	}
 	if string(got) != original {
 		t.Errorf("file after rejected edit = %q, want unchanged", got)
+	}
+	if !strings.Contains(output.String(), "Rejected the edit tool call; it did not execute.") {
+		t.Errorf("output = %q, want rejection notice shown to the user", output.String())
 	}
 	toolResult := conversation.Messages[2]
 	if toolResult.Role != session.RoleTool || !strings.Contains(toolResult.Content, "rejected the edit tool call") {
@@ -429,6 +438,9 @@ func TestAgentReportsWriteToolDenialOnRejection(t *testing.T) {
 	if _, err := os.Stat(filepath.Join(root, "notes.txt")); !os.IsNotExist(err) {
 		t.Fatalf("rejected write created a file: %v", err)
 	}
+	if !strings.Contains(output.String(), "Rejected the write tool call; it did not execute.") {
+		t.Errorf("output = %q, want rejection notice shown to the user", output.String())
+	}
 	toolResult := conversation.Messages[2]
 	if toolResult.Role != session.RoleTool || !strings.Contains(toolResult.Content, "rejected the write tool call") {
 		t.Errorf("rejected tool result = %#v, want denial reported to model", toolResult)
@@ -467,6 +479,9 @@ func TestAgentExecutesApprovedCommandToolCall(t *testing.T) {
 	}
 	if !strings.Contains(output.String(), "WARNING") || !strings.Contains(output.String(), "Approve?") {
 		t.Errorf("output = %q, want destructive warning and approval prompt", output.String())
+	}
+	if !strings.Contains(output.String(), "Tool output (command, destructive):") || !strings.Contains(output.String(), "  exit code: 0") || !strings.Contains(output.String(), "  hello") {
+		t.Errorf("output = %q, want command tool output echoed to the terminal", output.String())
 	}
 	toolResult := conversation.Messages[2]
 	if toolResult.Role != session.RoleTool || toolResult.ToolCallID != "call-1" {
@@ -509,6 +524,9 @@ func TestAgentRejectsCommandToolCallOnDenial(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(root, "side_effect.txt")); !os.IsNotExist(err) {
 		t.Fatalf("rejected command created a side effect: %v", err)
+	}
+	if !strings.Contains(output.String(), "Rejected the command tool call; it did not execute.") {
+		t.Errorf("output = %q, want rejection notice shown to the user", output.String())
 	}
 	toolResult := conversation.Messages[2]
 	if toolResult.Role != session.RoleTool || !strings.Contains(toolResult.Content, "rejected the command tool call") {
@@ -606,6 +624,9 @@ func TestAgentAutoApprovesReadToolWhileShowingReport(t *testing.T) {
 	}
 	if strings.Contains(rendered, "Approve?") {
 		t.Errorf("output = %q, want no y/n prompt for an auto-approved Read Tool", rendered)
+	}
+	if !strings.Contains(rendered, "Tool output (read, read):") || !strings.Contains(rendered, "  package main") {
+		t.Errorf("output = %q, want tool output echoed for the auto-approved Read Tool", rendered)
 	}
 	toolResult := conversation.Messages[2]
 	if toolResult.Role != session.RoleTool || toolResult.Content != "package main\n" {

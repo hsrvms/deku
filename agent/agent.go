@@ -427,6 +427,9 @@ func (a *Agent) runTool(ctx context.Context, call provider.ToolCall) (string, er
 		return "", fmt.Errorf("approve tool %q: %w", call.Name, err)
 	}
 	if !decision.Approved {
+		if err := writeOutput(a.output, fmt.Sprintf("Rejected the %s tool call; it did not execute.\n", call.Name)); err != nil {
+			return "", fmt.Errorf("display tool rejection: %w", err)
+		}
 		return fmt.Sprintf("The user rejected the %s tool call; it did not execute.", call.Name), nil
 	}
 	a.sink.Indicator(activity.Working)
@@ -438,10 +441,29 @@ func (a *Agent) runTool(ctx context.Context, call provider.ToolCall) (string, er
 		}
 		content = "tool error: " + toolErr.Error()
 	}
+	if err := a.echoToolResult(call.Name, decision.Tier, content); err != nil {
+		return "", err
+	}
 	for _, path := range a.tools.ChangesSince(before) {
 		a.sink.Change(activity.Change{Tool: call.Name, Path: path})
 	}
 	return content, nil
+}
+
+// echoToolResult renders a Tool's normalized result to the terminal after
+// execution, regardless of the Tool's tier, so the user sees what ran on
+// their machine rather than only what the model reports back. The header
+// names the Tool and its effective tier; the content is indented to keep it
+// distinct from streamed model text.
+func (a *Agent) echoToolResult(name string, tier approval.Tier, content string) error {
+	var builder strings.Builder
+	fmt.Fprintf(&builder, "Tool output (%s, %s):\n", name, tier)
+	for _, line := range strings.Split(strings.TrimSuffix(content, "\n"), "\n") {
+		builder.WriteString("  ")
+		builder.WriteString(line)
+		builder.WriteByte('\n')
+	}
+	return writeOutput(a.output, builder.String())
 }
 
 func (a *Agent) consumeStep(events <-chan provider.Event) (string, []provider.ToolCall, *provider.Usage, error) {
