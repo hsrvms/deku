@@ -11,6 +11,9 @@ cover.html
 # Environment
 .env
 
+# Deku project-scope configuration
+.deku/
+
 # IDE
 .idea/
 .vscode/
