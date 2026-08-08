@@ -352,16 +352,27 @@ type commandArguments struct {
 
 func (t *commandTool) Tier() approval.Tier { return approval.Destructive }
 
-func (t *commandTool) Report(raw json.RawMessage) (string, error) {
+// validate decodes and validates the arguments for one call. Report and
+// Execute share it, so a call whose Report rendered successfully is never
+// rejected by different rules at execution time.
+func (t *commandTool) validate(raw json.RawMessage) (commandArguments, error) {
 	var arguments commandArguments
 	if err := decodeArguments(raw, &arguments); err != nil {
-		return "", fmt.Errorf("command arguments: %w", err)
+		return commandArguments{}, fmt.Errorf("command arguments: %w", err)
 	}
 	if strings.TrimSpace(arguments.Command) == "" {
-		return "", errors.New("command is required")
+		return commandArguments{}, errors.New("command is required")
 	}
 	if arguments.Timeout < 0 {
-		return "", errors.New("command timeout must be positive")
+		return commandArguments{}, errors.New("command timeout must be positive")
+	}
+	return arguments, nil
+}
+
+func (t *commandTool) Report(raw json.RawMessage) (string, error) {
+	arguments, err := t.validate(raw)
+	if err != nil {
+		return "", err
 	}
 	report := "Run: " + arguments.Command
 	if strings.TrimSpace(arguments.Dir) != "" {
@@ -396,15 +407,9 @@ func (t *commandTool) Definition() provider.ToolDefinition {
 }
 
 func (t *commandTool) Execute(ctx context.Context, raw json.RawMessage) (string, error) {
-	var arguments commandArguments
-	if err := decodeArguments(raw, &arguments); err != nil {
-		return "", fmt.Errorf("command arguments: %w", err)
-	}
-	if strings.TrimSpace(arguments.Command) == "" {
-		return "", errors.New("command is required")
-	}
-	if arguments.Timeout < 0 {
-		return "", errors.New("command timeout must be positive")
+	arguments, err := t.validate(raw)
+	if err != nil {
+		return "", err
 	}
 	dir, err := t.filesystem.resolve(ctx, arguments.Dir, true)
 	if err != nil {
@@ -491,21 +496,32 @@ type editArguments struct {
 
 func (t *editTool) Tier() approval.Tier { return approval.Write }
 
-func (t *editTool) Report(raw json.RawMessage) (string, error) {
+// validate decodes and validates the arguments for one call. Report and
+// Execute share it, so a call whose Report rendered successfully is never
+// rejected by different rules at execution time.
+func (t *editTool) validate(raw json.RawMessage) (editArguments, error) {
 	var arguments editArguments
 	if err := decodeArguments(raw, &arguments); err != nil {
-		return "", fmt.Errorf("edit arguments: %w", err)
+		return editArguments{}, fmt.Errorf("edit arguments: %w", err)
 	}
 	if strings.TrimSpace(arguments.Path) == "" {
-		return "", errors.New("path is required")
+		return editArguments{}, errors.New("path is required")
 	}
 	if len(arguments.Edits) == 0 {
-		return "", errors.New("edit requires at least one replacement")
+		return editArguments{}, errors.New("edit requires at least one replacement")
 	}
 	for index, change := range arguments.Edits {
 		if strings.TrimSpace(change.OldText) == "" {
-			return "", fmt.Errorf("edit %d: oldText is required", index+1)
+			return editArguments{}, fmt.Errorf("edit %d: oldText is required", index+1)
 		}
+	}
+	return arguments, nil
+}
+
+func (t *editTool) Report(raw json.RawMessage) (string, error) {
+	arguments, err := t.validate(raw)
+	if err != nil {
+		return "", err
 	}
 	var builder strings.Builder
 	fmt.Fprintf(&builder, "Edit: %s", arguments.Path)
@@ -547,13 +563,24 @@ type writeArguments struct {
 
 func (t *writeTool) Tier() approval.Tier { return approval.Write }
 
-func (t *writeTool) Report(raw json.RawMessage) (string, error) {
+// validate decodes and validates the arguments for one call. Report and
+// Execute share it, so a call whose Report rendered successfully is never
+// rejected by different rules at execution time.
+func (t *writeTool) validate(raw json.RawMessage) (writeArguments, error) {
 	var arguments writeArguments
 	if err := decodeArguments(raw, &arguments); err != nil {
-		return "", fmt.Errorf("write arguments: %w", err)
+		return writeArguments{}, fmt.Errorf("write arguments: %w", err)
 	}
 	if strings.TrimSpace(arguments.Path) == "" {
-		return "", errors.New("path is required")
+		return writeArguments{}, errors.New("path is required")
+	}
+	return arguments, nil
+}
+
+func (t *writeTool) Report(raw json.RawMessage) (string, error) {
+	arguments, err := t.validate(raw)
+	if err != nil {
+		return "", err
 	}
 	report := "Write: " + arguments.Path
 	if arguments.Overwrite {
@@ -587,9 +614,9 @@ func (t *writeTool) Definition() provider.ToolDefinition {
 }
 
 func (t *writeTool) Execute(ctx context.Context, raw json.RawMessage) (string, error) {
-	var arguments writeArguments
-	if err := decodeArguments(raw, &arguments); err != nil {
-		return "", fmt.Errorf("write arguments: %w", err)
+	arguments, err := t.validate(raw)
+	if err != nil {
+		return "", err
 	}
 	path, err := t.filesystem.resolveCreatePath(ctx, arguments.Path)
 	if err != nil {
@@ -624,10 +651,21 @@ func (t *writeTool) Execute(ctx context.Context, raw json.RawMessage) (string, e
 
 func (t *lsTool) Tier() approval.Tier { return approval.Read }
 
-func (t *lsTool) Report(raw json.RawMessage) (string, error) {
+// validate decodes the arguments for one call. Report and Execute share it,
+// so a call whose Report rendered successfully is never rejected by
+// different rules at execution time.
+func (t *lsTool) validate(raw json.RawMessage) (lsArguments, error) {
 	var arguments lsArguments
 	if err := decodeArguments(raw, &arguments); err != nil {
-		return "", fmt.Errorf("ls arguments: %w", err)
+		return lsArguments{}, fmt.Errorf("ls arguments: %w", err)
+	}
+	return arguments, nil
+}
+
+func (t *lsTool) Report(raw json.RawMessage) (string, error) {
+	arguments, err := t.validate(raw)
+	if err != nil {
+		return "", err
 	}
 	if strings.TrimSpace(arguments.Path) == "" {
 		return "List: repository root", nil
@@ -637,16 +675,27 @@ func (t *lsTool) Report(raw json.RawMessage) (string, error) {
 
 func (t *readTool) Tier() approval.Tier { return approval.Read }
 
-func (t *readTool) Report(raw json.RawMessage) (string, error) {
+// validate decodes and validates the arguments for one call. Report and
+// Execute share it, so a call whose Report rendered successfully is never
+// rejected by different rules at execution time.
+func (t *readTool) validate(raw json.RawMessage) (readArguments, error) {
 	var arguments readArguments
 	if err := decodeArguments(raw, &arguments); err != nil {
-		return "", fmt.Errorf("read arguments: %w", err)
+		return readArguments{}, fmt.Errorf("read arguments: %w", err)
 	}
 	if strings.TrimSpace(arguments.Path) == "" {
-		return "", errors.New("path is required")
+		return readArguments{}, errors.New("path is required")
 	}
 	if (arguments.StartLine != nil && *arguments.StartLine < 1) || (arguments.EndLine != nil && *arguments.EndLine < 1) {
-		return "", errors.New("line numbers must be positive")
+		return readArguments{}, errors.New("line numbers must be positive")
+	}
+	return arguments, nil
+}
+
+func (t *readTool) Report(raw json.RawMessage) (string, error) {
+	arguments, err := t.validate(raw)
+	if err != nil {
+		return "", err
 	}
 	report := "Read: " + arguments.Path
 	switch {
@@ -662,13 +711,24 @@ func (t *readTool) Report(raw json.RawMessage) (string, error) {
 
 func (t *grepTool) Tier() approval.Tier { return approval.Read }
 
-func (t *grepTool) Report(raw json.RawMessage) (string, error) {
+// validate decodes and validates the arguments for one call. Report and
+// Execute share it, so a call whose Report rendered successfully is never
+// rejected by different rules at execution time.
+func (t *grepTool) validate(raw json.RawMessage) (grepArguments, error) {
 	var arguments grepArguments
 	if err := decodeArguments(raw, &arguments); err != nil {
-		return "", fmt.Errorf("grep arguments: %w", err)
+		return grepArguments{}, fmt.Errorf("grep arguments: %w", err)
 	}
 	if strings.TrimSpace(arguments.Pattern) == "" {
-		return "", errors.New("grep pattern is required")
+		return grepArguments{}, errors.New("grep pattern is required")
+	}
+	return arguments, nil
+}
+
+func (t *grepTool) Report(raw json.RawMessage) (string, error) {
+	arguments, err := t.validate(raw)
+	if err != nil {
+		return "", err
 	}
 	report := "Search: " + arguments.Pattern
 	if strings.TrimSpace(arguments.Path) != "" {
@@ -708,17 +768,9 @@ func (t *editTool) Definition() provider.ToolDefinition {
 }
 
 func (t *editTool) Execute(ctx context.Context, raw json.RawMessage) (string, error) {
-	var arguments editArguments
-	if err := decodeArguments(raw, &arguments); err != nil {
-		return "", fmt.Errorf("edit arguments: %w", err)
-	}
-	if len(arguments.Edits) == 0 {
-		return "", errors.New("edit requires at least one replacement")
-	}
-	for index, change := range arguments.Edits {
-		if strings.TrimSpace(change.OldText) == "" {
-			return "", fmt.Errorf("edit %d: oldText is required", index+1)
-		}
+	arguments, err := t.validate(raw)
+	if err != nil {
+		return "", err
 	}
 	path, err := t.filesystem.resolve(ctx, arguments.Path, false)
 	if err != nil {
@@ -794,9 +846,9 @@ func (t *lsTool) Definition() provider.ToolDefinition {
 }
 
 func (t *lsTool) Execute(ctx context.Context, raw json.RawMessage) (string, error) {
-	var arguments lsArguments
-	if err := decodeArguments(raw, &arguments); err != nil {
-		return "", fmt.Errorf("ls arguments: %w", err)
+	arguments, err := t.validate(raw)
+	if err != nil {
+		return "", err
 	}
 	path, err := t.filesystem.resolve(ctx, arguments.Path, true)
 	if err != nil {
@@ -862,9 +914,9 @@ func (t *readTool) Definition() provider.ToolDefinition {
 }
 
 func (t *readTool) Execute(ctx context.Context, raw json.RawMessage) (string, error) {
-	var arguments readArguments
-	if err := decodeArguments(raw, &arguments); err != nil {
-		return "", fmt.Errorf("read arguments: %w", err)
+	arguments, err := t.validate(raw)
+	if err != nil {
+		return "", err
 	}
 	path, err := t.filesystem.resolve(ctx, arguments.Path, false)
 	if err != nil {
@@ -920,12 +972,9 @@ func (t *grepTool) Definition() provider.ToolDefinition {
 }
 
 func (t *grepTool) Execute(ctx context.Context, raw json.RawMessage) (string, error) {
-	var arguments grepArguments
-	if err := decodeArguments(raw, &arguments); err != nil {
-		return "", fmt.Errorf("grep arguments: %w", err)
-	}
-	if strings.TrimSpace(arguments.Pattern) == "" {
-		return "", errors.New("grep pattern is required")
+	arguments, err := t.validate(raw)
+	if err != nil {
+		return "", err
 	}
 	pattern, err := regexp.Compile(arguments.Pattern)
 	if err != nil {

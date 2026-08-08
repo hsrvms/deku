@@ -667,6 +667,12 @@ func TestAgentRefusesToolCallWithoutRenderableReport(t *testing.T) {
 	if strings.Contains(output.String(), "Approve?") {
 		t.Errorf("output = %q, want no approval prompt for a refused call", output.String())
 	}
+	if !strings.Contains(output.String(), "Refused the write tool call; its Command Report could not be rendered.") {
+		t.Errorf("output = %q, want a refusal notice with the same visibility as a rejection", output.String())
+	}
+	if !strings.Contains(output.String(), "Tool output (write, write):") || !strings.Contains(output.String(), "tool error:") {
+		t.Errorf("output = %q, want the refused content echoed like executed tool output", output.String())
+	}
 	entries, err := os.ReadDir(root)
 	if err != nil {
 		t.Fatal(err)

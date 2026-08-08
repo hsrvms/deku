@@ -1,15 +1,33 @@
-// Package lineio provides a shared non-empty terminal line reader. Both the
-// Approval gate and the Agent read user decisions from the same underlying
-// reader, so they share one robust implementation instead of each re-implement
-// buffer handling and blank-line skipping.
+// Package lineio provides shared terminal I/O helpers: a non-empty terminal
+// line reader and terminal detection. Both the Approval gate and the Agent
+// read user decisions from the same underlying reader, so they share one
+// robust implementation instead of each re-implement buffer handling and
+// blank-line skipping; the CLI and the Approval gate share one terminal
+// check so styling and prompting decisions are made the same way everywhere.
 package lineio
 
 import (
 	"bufio"
 	"errors"
 	"io"
+	"os"
 	"strings"
 )
+
+// IsTerminal reports whether v is a terminal character device, so callers can
+// style output or prompt only when a user can see or answer. Anything that is
+// not an *os.File, or whose Stat fails, is not a terminal.
+func IsTerminal(v any) bool {
+	file, ok := v.(*os.File)
+	if !ok {
+		return false
+	}
+	info, err := file.Stat()
+	if err != nil {
+		return false
+	}
+	return info.Mode()&os.ModeCharDevice != 0
+}
 
 // Scan returns the next non-empty line from br, skipping blank lines. Lines
 // longer than the reader's buffer are reassembled whole rather than returned

@@ -228,7 +228,7 @@ func (a *Agent) SetSelection(selection provider.Selection) error {
 	if err != nil {
 		return err
 	}
-	if err := a.session.RecordSelection(session.Selection{Provider: selection.Provider, Model: selection.Model}); err != nil {
+	if err := a.session.RecordSelection(selection); err != nil {
 		return fmt.Errorf("record selection: %w", err)
 	}
 	a.provider = adapter
@@ -405,21 +405,31 @@ func (a *Agent) systemPrompt() (string, error) {
 // runTool gates a single Tool Call behind Approval and executes it, returning
 // the normalized Tool Result content for the model. The call's Command Report
 // is rendered before any Approval is sought; a call whose Report cannot be
-// rendered is refused without executing, never approved blindly.
+// rendered is refused without executing, never approved blindly. A refusal is
+// as visible to the user as a denial or an execution: an explicit notice
+// states why the call did not run and the recorded content is echoed to the
+// terminal, so the transcript and the terminal never diverge.
 func (a *Agent) runTool(ctx context.Context, call provider.ToolCall) (string, error) {
 	declared, tierErr := a.tools.Tier(call.Name)
 	if tierErr != nil {
-		return "tool error: " + tierErr.Error(), nil
+		return a.refuseTool(call.Name, "", "it is not a known tool", "tool error: "+tierErr.Error())
 	}
 	report, reportErr := a.tools.Report(call.Name, call.Arguments)
 	if reportErr != nil {
-		return "tool error: " + reportErr.Error(), nil
+		return a.refuseTool(call.Name, declared, "its Command Report could not be rendered", "tool error: "+reportErr.Error())
 	}
 	if strings.TrimSpace(report) == "" {
-		return fmt.Sprintf("tool error: the %s tool call has no Command Report; refusing to execute it", call.Name), nil
+		return a.refuseTool(call.Name, declared, "its Command Report could not be rendered", fmt.Sprintf("tool error: the %s tool call has no Command Report; refusing to execute it", call.Name))
 	}
-	a.sink.Indicator(activity.AwaitingApproval)
-	decision, err := a.approval.Decide(ctx, approval.Request{ToolName: call.Name, Declared: declared, Report: report})
+	request := approval.Request{ToolName: call.Name, Declared: declared, Report: report}
+	// The awaiting-approval indicator is emitted only when the loop actually
+	// pauses for a user decision: an auto-approved call transitions Thinking
+	// → Working directly (CONTEXT.md defines awaiting Approval as the paused
+	// state).
+	if a.approval.WillPrompt(request) {
+		a.sink.Indicator(activity.AwaitingApproval)
+	}
+	decision, err := a.approval.Decide(ctx, request)
 	if err != nil {
 		if contextErr := ctx.Err(); contextErr != nil {
 			return "", fmt.Errorf("approve tool %q: %w", call.Name, contextErr)
@@ -450,14 +460,35 @@ func (a *Agent) runTool(ctx context.Context, call provider.ToolCall) (string, er
 	return content, nil
 }
 
+// refuseTool surfaces a refused Tool Call to the user and returns its
+// normalized Tool Result content for the model and the Session. A refusal
+// gets the same visibility as a rejection: an explicit notice states why the
+// call did not run, and the recorded content is echoed to the terminal like
+// executed tools' output. tier is the declared tier when the tool is known
+// and empty otherwise.
+func (a *Agent) refuseTool(name string, tier approval.Tier, notice, content string) (string, error) {
+	if err := writeOutput(a.output, fmt.Sprintf("Refused the %s tool call; %s.\n", name, notice)); err != nil {
+		return "", fmt.Errorf("display tool refusal: %w", err)
+	}
+	if err := a.echoToolResult(name, tier, content); err != nil {
+		return "", err
+	}
+	return content, nil
+}
+
 // echoToolResult renders a Tool's normalized result to the terminal after
-// execution, regardless of the Tool's tier, so the user sees what ran on
-// their machine rather than only what the model reports back. The header
-// names the Tool and its effective tier; the content is indented to keep it
-// distinct from streamed model text.
+// execution or refusal, regardless of the Tool's tier, so the user sees what
+// ran on their machine rather than only what the model reports back. The
+// header names the Tool and its effective tier (omitted when the tier is
+// unknown, as for a refused call to an unknown tool); the content is indented
+// to keep it distinct from streamed model text.
 func (a *Agent) echoToolResult(name string, tier approval.Tier, content string) error {
 	var builder strings.Builder
-	fmt.Fprintf(&builder, "Tool output (%s, %s):\n", name, tier)
+	if tier == "" {
+		fmt.Fprintf(&builder, "Tool output (%s):\n", name)
+	} else {
+		fmt.Fprintf(&builder, "Tool output (%s, %s):\n", name, tier)
+	}
 	for _, line := range strings.Split(strings.TrimSuffix(content, "\n"), "\n") {
 		builder.WriteString("  ")
 		builder.WriteString(line)

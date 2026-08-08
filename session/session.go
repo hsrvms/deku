@@ -1,8 +1,9 @@
 // Package session persists an immutable, append-only JSONL transcript and
 // reconstructs Session history when resumed. The transcript holds the
-// conversation messages and per-Session Selection records; messages written
-// before Selection records existed are bare message lines and resume
-// unchanged.
+// conversation messages and per-Session Selection records (the Selection
+// value itself is owned by the provider module — Session records it, it does
+// not define it); messages written before Selection records existed are bare
+// message lines and resume unchanged.
 package session
 
 import (
@@ -18,6 +19,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/hsrvms/deku/provider"
 )
 
 const (
@@ -44,14 +47,6 @@ type Message struct {
 	ToolCalls  []ToolCall `json:"tool_calls,omitempty"`
 }
 
-// Selection is a recorded Provider and Model choice that overrides the
-// configured default Selection for one Session. It applies to the Turns
-// after it is recorded and is restored when the Session resumes.
-type Selection struct {
-	Provider string `json:"provider"`
-	Model    string `json:"model"`
-}
-
 // Transcript record types. Message lines carry no type: they predate the
 // typed records and are read as messages when the type is absent.
 const (
@@ -59,10 +54,11 @@ const (
 )
 
 // transcriptRecord is one typed JSONL line. Exactly one payload is set for a
-// valid record.
+// valid record. The recorded Selection value is owned by the provider module;
+// the Session persists it.
 type transcriptRecord struct {
-	Type      string     `json:"type"`
-	Selection *Selection `json:"selection,omitempty"`
+	Type      string              `json:"type"`
+	Selection *provider.Selection `json:"selection,omitempty"`
 }
 
 // Session is an append-only conversation stored by a Store.
@@ -71,7 +67,7 @@ type Session struct {
 	CreatedAt time.Time
 	Messages  []Message
 
-	selection *Selection
+	selection *provider.Selection
 
 	store *Store
 	mu    sync.Mutex
@@ -115,7 +111,7 @@ func (s *Session) Append(message Message) error {
 // Session's active override. The record is immutable once written; a later
 // RecordSelection supersedes it. Both the Provider and the Model are
 // required: a partial override is never recorded.
-func (s *Session) RecordSelection(selection Selection) error {
+func (s *Session) RecordSelection(selection provider.Selection) error {
 	if err := s.writable(); err != nil {
 		return err
 	}
@@ -178,14 +174,14 @@ func (s *Session) appendRecord(data []byte) error {
 // LatestSelection returns the last Selection recorded in the Session, whether
 // during this run or restored on resume. The boolean reports whether any
 // override exists; without one the configured default Selection applies.
-func (s *Session) LatestSelection() (Selection, bool) {
+func (s *Session) LatestSelection() (provider.Selection, bool) {
 	if s == nil {
-		return Selection{}, false
+		return provider.Selection{}, false
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.selection == nil {
-		return Selection{}, false
+		return provider.Selection{}, false
 	}
 	return *s.selection, true
 }
@@ -314,11 +310,11 @@ func (s *Store) Resume(id string) (resumed *Session, err error) {
 // Selection record from a Session file. Lines without a record type are
 // conversation messages; a line with an unknown type fails the resume so a
 // corrupted transcript is never silently truncated.
-func readTranscript(reader io.Reader, id string) ([]Message, *Selection, error) {
+func readTranscript(reader io.Reader, id string) ([]Message, *provider.Selection, error) {
 	scanner := bufio.NewScanner(reader)
 	scanner.Buffer(make([]byte, 64*1024), 10*1024*1024)
 	messages := make([]Message, 0)
-	var latest *Selection
+	var latest *provider.Selection
 	line := 0
 	for scanner.Scan() {
 		line++

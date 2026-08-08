@@ -100,9 +100,12 @@ func TestAgentEmitsWorkingStreamWithoutChangeForReadTool(t *testing.T) {
 		t.Fatalf("Turn() error = %v", err)
 	}
 
+	// A purely auto-approved call never pauses the loop for a decision, so
+	// it must not emit the awaiting-approval indicator: Thinking → Working
+	// directly (CONTEXT.md: awaiting Approval is the state where the loop is
+	// paused for a user decision).
 	wantIndicators := []activity.Indicator{
 		activity.Thinking,
-		activity.AwaitingApproval,
 		activity.Working,
 		activity.Thinking,
 	}

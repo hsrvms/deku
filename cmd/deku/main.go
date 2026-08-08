@@ -15,6 +15,7 @@ import (
 	"github.com/hsrvms/deku/agent"
 	"github.com/hsrvms/deku/approval"
 	"github.com/hsrvms/deku/config"
+	"github.com/hsrvms/deku/lineio"
 	"github.com/hsrvms/deku/provider"
 	"github.com/hsrvms/deku/repository"
 	"github.com/hsrvms/deku/session"
@@ -61,7 +62,7 @@ func run(args []string, input io.Reader, output, errorOutput io.Writer) int {
 		}
 		return 1
 	}
-	cfg, err = resolveProjectTrust(cfg, projectRoot, input, output, isTerminal(input))
+	cfg, err = resolveProjectTrust(cfg, projectRoot, input, output, lineio.IsTerminal(input))
 	if err != nil {
 		if writeErr := writeError(errorOutput, "deku: %v\n", err); writeErr != nil {
 			return 1
@@ -105,7 +106,7 @@ func run(args []string, input io.Reader, output, errorOutput io.Writer) int {
 	}
 	selection := cfg.Selection
 	if override, ok := conversation.LatestSelection(); ok {
-		selection = provider.Selection{Provider: override.Provider, Model: override.Model}
+		selection = override
 	}
 	if selection.IsZero() {
 		if writeErr := writeError(errorOutput, "deku: no Provider or Model is selected: set defaultProvider and defaultModel in settings.json\n"); writeErr != nil {
@@ -208,21 +209,6 @@ func promptTrust(input io.Reader, output io.Writer, root string) (bool, error) {
 	}
 }
 
-// isTerminal reports whether input is an interactive terminal, so the Trust
-// prompt is shown only when a user can answer it. Piped and captured input
-// never prompt.
-func isTerminal(input io.Reader) bool {
-	file, ok := input.(*os.File)
-	if !ok {
-		return false
-	}
-	info, err := file.Stat()
-	if err != nil {
-		return false
-	}
-	return info.Mode()&os.ModeCharDevice != 0
-}
-
 func loadConversation(store *session.Store, resumeID string) (*session.Session, error) {
 	if resumeID != "" {
 		conversation, err := store.Resume(resumeID)
@@ -238,16 +224,7 @@ func loadConversation(store *session.Store, resumeID string) (*session.Session, 
 	return conversation, nil
 }
 
-// conversationRunner is the CLI's seam over the Agent: it drives complete
-// Turns, changes the active Selection between Turns, and reports the current
-// one.
-type conversationRunner interface {
-	Turn(context.Context, string) (agent.TurnResult, error)
-	SetSelection(provider.Selection) error
-	Selection() provider.Selection
-}
-
-func runConversation(runner conversationRunner, providers *provider.Registry, input io.Reader, output, errorOutput io.Writer) int {
+func runConversation(runner *agent.Agent, providers *provider.Registry, input io.Reader, output, errorOutput io.Writer) int {
 	scanner := bufio.NewScanner(input)
 	scanner.Buffer(make([]byte, 64*1024), 10*1024*1024)
 	for {
@@ -303,7 +280,7 @@ func runConversation(runner conversationRunner, providers *provider.Registry, in
 // Turns. The /model command lists the Providers the Agent can authenticate
 // to, or — with a Provider and Model argument — switches the active
 // Selection for subsequent Turns and records the override in the Session.
-func handleCommand(runner conversationRunner, providers *provider.Registry, line string, output io.Writer) error {
+func handleCommand(runner *agent.Agent, providers *provider.Registry, line string, output io.Writer) error {
 	fields := strings.Fields(line)
 	switch fields[0] {
 	case "/model":
@@ -328,7 +305,7 @@ func handleCommand(runner conversationRunner, providers *provider.Registry, line
 // listSelectableModels shows the current Selection and every Provider the
 // Agent can authenticate to with its Models, so Selection is only offered
 // from what works.
-func listSelectableModels(runner conversationRunner, providers *provider.Registry, output io.Writer) error {
+func listSelectableModels(runner *agent.Agent, providers *provider.Registry, output io.Writer) error {
 	selection := runner.Selection()
 	if _, err := fmt.Fprintf(output, "current selection: %s / %s\n", selection.Provider, selection.Model); err != nil {
 		return err

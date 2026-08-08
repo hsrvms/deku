@@ -45,7 +45,10 @@ Any string value in a module file may reference the environment:
 
 - `${VAR}` — replaced with the value of the environment variable `VAR`,
   resolved first from the process environment, then from the Deku Home `.env`
-  file. An unset variable with no default makes the value absent.
+  file. An unset variable with no default is an explicit configuration error
+  at startup naming the variable and the field, so misconfiguration fails
+  fast instead of silently falling back to a default or surfacing later as
+  an unrelated error.
 - `${VAR:-default}` — uses `default` when `VAR` is unset or empty.
 
 A literal value always wins over a placeholder. The Deku Home `.env` file
@@ -54,10 +57,10 @@ ignored) and is the natural place for secrets and machine-specific values; the
 real process environment always overrides it.
 
 An **Authentication whose API key does not resolve** (for example `${VAR}`
-where `VAR` is unset) leaves its Provider declared but **unable to
-authenticate**: it is excluded from Selection, and Deku reports explicitly if
-the selected Provider cannot authenticate. A missing secret for one Provider
-never blocks the others.
+where `VAR` is unset) is the one deliberate exception to the fail-fast rule:
+it leaves its Provider declared but **unable to authenticate**, is excluded
+from Selection, and Deku reports explicitly if the selected Provider cannot
+authenticate. A missing secret for one Provider never blocks the others.
 
 ## `settings.json`
 

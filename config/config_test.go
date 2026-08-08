@@ -322,8 +322,11 @@ func TestLoadAuthKeyWithDefaultFallsBack(t *testing.T) {
 }
 
 func TestLoadUnresolvedAuthKeyStaysEmpty(t *testing.T) {
-	// A missing secret makes the Provider unauthenticatable; it must not
-	// fail the whole startup, so other Providers remain usable.
+	// The one deliberate exception to fail-fast substitution (v0.1
+	// development plan, Phase 2): an Authentication whose key does not
+	// resolve leaves its Provider declared but unable to authenticate. A
+	// missing secret must not fail the whole startup, so other Providers
+	// remain usable.
 	writeModules(t,
 		``,
 		`{ "custom-auth": { "type": "api_key", "api_key": "${CUSTOM_KEY}" } }`,
@@ -336,6 +339,157 @@ func TestLoadUnresolvedAuthKeyStaysEmpty(t *testing.T) {
 	}
 	if got := cfg.Auth["custom-auth"].APIKey; got != "" {
 		t.Errorf("api_key = %q, want empty for an unset placeholder", got)
+	}
+}
+
+func TestLoadMissingPlaceholderFailsFast(t *testing.T) {
+	// An unset ${VAR} with no default in a required value is a configuration
+	// error naming the variable, so misconfiguration fails fast instead of
+	// silently falling back to a built-in default or surfacing later as an
+	// unrelated error (spec Story 8; Testing Decisions require table-driven
+	// missing-placeholder cases).
+	tests := []struct {
+		name       string
+		modules    map[string]string
+		wantVar    string
+		wantSource string
+	}{
+		{
+			name: "default provider",
+			modules: map[string]string{
+				"settings.json": `{ "defaultProvider": "${UNSET_DEFAULT_PROVIDER}" }`,
+			},
+			wantVar:    "UNSET_DEFAULT_PROVIDER",
+			wantSource: "default_provider",
+		},
+		{
+			name: "default model",
+			modules: map[string]string{
+				"settings.json": `{ "defaultModel": "${UNSET_DEFAULT_MODEL}" }`,
+			},
+			wantVar:    "UNSET_DEFAULT_MODEL",
+			wantSource: "default_model",
+		},
+		{
+			name: "agent commit mode",
+			modules: map[string]string{
+				"settings.json": `{ "agent_commits": { "mode": "${UNSET_COMMIT_MODE}" } }`,
+			},
+			wantVar:    "UNSET_COMMIT_MODE",
+			wantSource: "agent_commits.mode",
+		},
+		{
+			name: "agent commit validation",
+			modules: map[string]string{
+				"settings.json": `{ "agent_commits": { "validation": "${UNSET_VALIDATION}" } }`,
+			},
+			wantVar:    "UNSET_VALIDATION",
+			wantSource: "agent_commits.validation",
+		},
+		{
+			name: "approval tool tier",
+			modules: map[string]string{
+				"settings.json": `{ "approval": { "tools": { "edit": "${UNSET_TIER}" } } }`,
+			},
+			wantVar:    "UNSET_TIER",
+			wantSource: "approval.tools",
+		},
+		{
+			name: "approval tier action",
+			modules: map[string]string{
+				"settings.json": `{ "approval": { "defaults": { "read": "${UNSET_ACTION}" } } }`,
+			},
+			wantVar:    "UNSET_ACTION",
+			wantSource: "approval.defaults",
+		},
+		{
+			name: "repository map exclusion",
+			modules: map[string]string{
+				"settings.json": `{ "repo_map": { "exclude": ["${UNSET_PATTERN}"] } }`,
+			},
+			wantVar:    "UNSET_PATTERN",
+			wantSource: "repo_map.exclude",
+		},
+		{
+			name: "provider base URL",
+			modules: map[string]string{
+				"models.json": `{ "providers": { "custom": { "adapter": "openai-compatible", "base_url": "${UNSET_BASE_URL}", "auth": "custom-auth", "models": ["model-a"] } } }`,
+			},
+			wantVar:    "UNSET_BASE_URL",
+			wantSource: "base_url",
+		},
+		{
+			name: "provider model name",
+			modules: map[string]string{
+				"models.json": `{ "providers": { "custom": { "adapter": "openai-compatible", "base_url": "https://api.example.com/v1", "auth": "custom-auth", "models": ["${UNSET_MODEL_NAME}"] } } }`,
+			},
+			wantVar:    "UNSET_MODEL_NAME",
+			wantSource: "models",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			writeDekuHome(t, tt.modules)
+			_, err := Load("")
+			if err == nil {
+				t.Fatal("expected an error for an unset placeholder with no default")
+			}
+			if !strings.Contains(err.Error(), tt.wantVar) {
+				t.Errorf("error = %q, want it to name variable %q", err, tt.wantVar)
+			}
+			if !strings.Contains(err.Error(), tt.wantSource) {
+				t.Errorf("error = %q, want it to name the source %q", err, tt.wantSource)
+			}
+		})
+	}
+}
+
+func TestLoadSubstitutesPlaceholdersInEveryValue(t *testing.T) {
+	// Env Substitution applies to every value the loader consumes — the
+	// Approval tier and action maps, the Repository Map exclusions, and the
+	// Model Registry — not only the scalar fields (spec Implementation
+	// Decision: "applying Env Substitution to every value").
+	writeDekuHome(t, map[string]string{
+		"settings.json": `{
+  "approval": {
+    "tools": { "edit": "${TIER}" },
+    "defaults": { "read": "${ACTION}" }
+  },
+  "repo_map": { "exclude": ["${PATTERN}"] }
+}`,
+		"models.json": `{
+  "providers": {
+    "custom": {
+      "adapter": "openai-compatible",
+      "base_url": "https://api.example.com/v1",
+      "auth": "custom-auth",
+      "models": ["${MODEL_NAME}"]
+    }
+  }
+}`,
+	})
+	t.Setenv("TIER", "destructive")
+	t.Setenv("ACTION", "prompt")
+	t.Setenv("PATTERN", "vendor/**")
+	t.Setenv("MODEL_NAME", "gpt-4")
+
+	cfg, err := Load("")
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	if got := cfg.Approval.Tools["edit"]; got != "destructive" {
+		t.Errorf("approval.tools.edit = %q, want substitution", got)
+	}
+	if got := cfg.Approval.Defaults["read"]; got != "prompt" {
+		t.Errorf("approval.defaults.read = %q, want substitution", got)
+	}
+	wantExclude := []string{"vendor/**"}
+	if !reflect.DeepEqual(cfg.RepoMap.Exclude, wantExclude) {
+		t.Errorf("repo_map.exclude = %#v, want %#v", cfg.RepoMap.Exclude, wantExclude)
+	}
+	wantModels := []string{"gpt-4"}
+	if !reflect.DeepEqual(cfg.Providers["custom"].Models, wantModels) {
+		t.Errorf("provider models = %#v, want %#v", cfg.Providers["custom"].Models, wantModels)
 	}
 }
 

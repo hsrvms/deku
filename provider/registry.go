@@ -41,10 +41,14 @@ type Provider struct {
 	Models  []string `json:"models"`
 }
 
-// Selection pairs the Provider and Model the Agent uses for a Turn.
+// Selection pairs the Provider and Model the Agent uses for a Turn. It is
+// the single Selection type in the system: configuration supplies a default,
+// the Session records per-Session overrides in its transcript (the JSON form
+// is part of the Session wire format and stable across resumes), and the
+// Agent applies the active one.
 type Selection struct {
-	Provider string
-	Model    string
+	Provider string `json:"provider"`
+	Model    string `json:"model"`
 }
 
 // IsZero reports whether no Selection has been made.
