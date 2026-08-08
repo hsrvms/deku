@@ -6,7 +6,7 @@ Deku is being built for developers who use OpenAI-compatible coding models and w
 
 ## Status
 
-Deku is in pre-release development. The current implementation target is [v0: Git-safe coding-agent foundation](docs/specs/2026-08-02-v0-git-safe-coding-agent.md). The first published distribution, [v0.0.2](https://github.com/hsrvms/deku/releases/tag/v0.0.2), is available for evaluation, but Deku is not yet ready for daily use.
+Deku is in pre-release development. The current implementation target is [v0: Git-safe coding-agent foundation](docs/specs/2026-08-02-v0-git-safe-coding-agent.md). The latest published distribution, [v0.1.0](https://github.com/hsrvms/deku/releases/tag/v0.1.0), is available for evaluation, but Deku is not yet ready for daily use.
 
 The v0 acceptance benchmark is implemented as an opt-in integration test that runs a real, OpenAI-compatible Provider against a committed seeded Go fixture repository and records Provider-call and billed-token metrics. Run it with:
 
@@ -20,10 +20,10 @@ It requires `DEKU_PROVIDER_ENDPOINT`, `DEKU_PROVIDER_API_KEY`, and `DEKU_PROVIDE
 
 Download the archive for your operating system and architecture from the [Releases](https://github.com/hsrvms/deku/releases) page. The initial release supports Linux amd64/arm64, macOS amd64/arm64, and Windows amd64. Each archive contains the executable at its root.
 
-For example, to install the Linux amd64 build of v0.0.2:
+For example, to install the Linux amd64 build of v0.1.0:
 
 ```sh
-VERSION=0.0.2
+VERSION=0.1.0
 curl -LO "https://github.com/hsrvms/deku/releases/download/v${VERSION}/deku_${VERSION}_linux_amd64.tar.gz"
 curl -LO "https://github.com/hsrvms/deku/releases/download/v${VERSION}/SHA256SUMS"
 sha256sum --ignore-missing -c SHA256SUMS

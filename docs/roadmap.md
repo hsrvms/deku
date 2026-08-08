@@ -8,7 +8,7 @@ A terminal-first Go coding agent for OpenAI-compatible providers. It establishes
 
 ## Release and distribution
 
-Accepted work for versioned CLI distribution is specified in [Release and CD publishing](specs/2026-08-03-release-cd-publishing.md). The first protected Release, `v0.0.2`, was published successfully. The release workflow covers protected-tag Releases, supported-platform archives, checksums, provenance attestations, protected publication approval, and withdrawal or revocation guidance. Publishing a Release does not make the current pre-release implementation ready for daily use.
+Accepted work for versioned CLI distribution is specified in [Release and CD publishing](specs/2026-08-03-release-cd-publishing.md). The first protected Release, `v0.0.2`, was published successfully, and the v0.1 milestone (configuration, Provider Registry and Selection, Approval transparency, activity seam) is released as `v0.1.0` through the same pipeline. The release workflow covers protected-tag Releases, supported-platform archives, checksums, provenance attestations, protected publication approval, and withdrawal or revocation guidance. Publishing a Release does not make the current pre-release implementation ready for daily use.
 
 ## v1 — Repository intelligence and extension delivery
 
