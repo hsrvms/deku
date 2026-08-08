@@ -50,6 +50,12 @@ The recorded outcome of a Tool Call, returned by the Agent to the Model and reta
 
 ---
 
+## Tool Output
+
+The Tool Result content echoed to the terminal after a Tool executes, regardless of the Tool's tier, so the user sees what ran on their machine rather than only what the Model reports. It is distinct from the Command Report, which precedes execution; Tool Output follows it.
+
+---
+
 ## Tool
 
 A function the Agent can invoke on behalf of the model. Every tool has:

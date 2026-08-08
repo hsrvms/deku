@@ -178,8 +178,11 @@ green/red diff), or the `write` path — so you approve an action, not a Tool
 name. Read-only tools (`ls`, `read`, `grep`) run without a prompt but still
 show their Report. Mutating tools
 (`write`, `edit`) pause and show the Report, then ask you to approve (`y`) or
-reject (`n`) before running; a rejection is reported back to the model and the
-tool does not execute. `write` creates a new file, fills an empty file, or—when
+reject (`n`) before running. After a Tool executes, its output is echoed to
+the terminal regardless of the Tool's tier, so you see what ran on your
+machine; a rejected call is reported to you with an explicit notice, recorded
+in the Session without executing, and never re-asked for Approval. `write`
+creates a new file, fills an empty file, or—when
 overwrite is requested—replaces a whole file's content; `edit` makes
 exact-match replacements inside an existing file. The `command` tool runs a
 shell command in the repository and is classified as Destructive, so it always

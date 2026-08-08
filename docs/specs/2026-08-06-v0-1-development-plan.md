@@ -92,6 +92,15 @@ Make gated actions visible before execution.
 - **Seam:** approval `Gate` with in-memory reader/writer; Agent seam for end-to-end Transparency and Session recording of denials.
 - **Done when:** a gated command/Edit/Write shows its concrete action before the y/n prompt; tool output is visible; spec user stories 19–22 pass.
 
+**Delivered by issue #40:** Tool execution output is echoed to the terminal
+regardless of the Tool's tier — auto-approved Read Tools and prompted
+Write/Destructive Tools alike — framed as a `Tool output (<tool>, <tier>):`
+block with the indented normalized result. A rejected Tool Call is reported
+to the user with an explicit notice, recorded in the Session transcript as a
+denial Tool Result without executing, and never re-asks the same Approval
+decision: each call receives exactly one decision and the Turn continues to
+the next Step with the denial as the Tool Result. User stories 19–22 pass.
+
 ## Phase 4 — Activity seam (ADR 0010, seam only)
 
 Establish the Agent-to-display activity stream for the future TUI.
