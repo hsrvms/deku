@@ -96,7 +96,23 @@ func run(args []string, input io.Reader, output, errorOutput io.Writer) int {
 		return 1
 	}
 
-	model := provider.NewOpenAICompatible(cfg.Provider.Endpoint, cfg.Provider.APIKey)
+	providers, err := provider.NewRegistry(cfg.Providers, cfg.Auth)
+	if err != nil {
+		if writeErr := writeError(errorOutput, "deku: %v\n", err); writeErr != nil {
+			return 1
+		}
+		return 1
+	}
+	selection := cfg.Selection
+	if override, ok := conversation.LatestSelection(); ok {
+		selection = provider.Selection{Provider: override.Provider, Model: override.Model}
+	}
+	if selection.IsZero() {
+		if writeErr := writeError(errorOutput, "deku: no Provider or Model is selected: set defaultProvider and defaultModel in settings.json\n"); writeErr != nil {
+			return 1
+		}
+		return 1
+	}
 	policy, err := approval.NewPolicyFromStrings(cfg.Approval.Tools, cfg.Approval.Defaults)
 	if err != nil {
 		if writeErr := writeError(errorOutput, "deku: %v\n", err); writeErr != nil {
@@ -128,8 +144,14 @@ func run(args []string, input io.Reader, output, errorOutput io.Writer) int {
 			return 1
 		}
 	}
-	runner := agent.NewWithGit(model, cfg.Provider.Model, conversation, output, input, registry, policy, cfg.RepoMap.Exclude, repo, commitMode, cfg.AgentCommits.Validation)
-	return runConversation(runner, input, output, errorOutput)
+	runner, err := agent.NewWithSelection(providers, selection, conversation, output, input, registry, policy, cfg.RepoMap.Exclude, repo, commitMode, cfg.AgentCommits.Validation)
+	if err != nil {
+		if writeErr := writeError(errorOutput, "deku: %v\n", err); writeErr != nil {
+			return 1
+		}
+		return 1
+	}
+	return runConversation(runner, providers, input, output, errorOutput)
 }
 
 // resolveProjectTrust handles the Project Trust decision for a repository that
@@ -216,7 +238,16 @@ func loadConversation(store *session.Store, resumeID string) (*session.Session, 
 	return conversation, nil
 }
 
-func runConversation(runner agent.Runner, input io.Reader, output, errorOutput io.Writer) int {
+// conversationRunner is the CLI's seam over the Agent: it drives complete
+// Turns, changes the active Selection between Turns, and reports the current
+// one.
+type conversationRunner interface {
+	Turn(context.Context, string) (agent.TurnResult, error)
+	SetSelection(provider.Selection) error
+	Selection() provider.Selection
+}
+
+func runConversation(runner conversationRunner, providers *provider.Registry, input io.Reader, output, errorOutput io.Writer) int {
 	scanner := bufio.NewScanner(input)
 	scanner.Buffer(make([]byte, 64*1024), 10*1024*1024)
 	for {
@@ -231,6 +262,14 @@ func runConversation(runner agent.Runner, input io.Reader, output, errorOutput i
 		}
 		request := strings.TrimSpace(scanner.Text())
 		if request == "" {
+			continue
+		}
+		if strings.HasPrefix(request, "/") {
+			if err := handleCommand(runner, providers, request, output); err != nil {
+				if writeErr := writeError(errorOutput, "deku: %v\n", err); writeErr != nil {
+					return 1
+				}
+			}
 			continue
 		}
 
@@ -258,6 +297,53 @@ func runConversation(runner agent.Runner, input io.Reader, output, errorOutput i
 		return 1
 	}
 	return 0
+}
+
+// handleCommand dispatches lines beginning with "/" before they become
+// Turns. The /model command lists the Providers the Agent can authenticate
+// to, or — with a Provider and Model argument — switches the active
+// Selection for subsequent Turns and records the override in the Session.
+func handleCommand(runner conversationRunner, providers *provider.Registry, line string, output io.Writer) error {
+	fields := strings.Fields(line)
+	switch fields[0] {
+	case "/model":
+		switch len(fields) {
+		case 1:
+			return listSelectableModels(runner, providers, output)
+		case 3:
+			selection := provider.Selection{Provider: fields[1], Model: fields[2]}
+			if err := runner.SetSelection(selection); err != nil {
+				return err
+			}
+			_, err := fmt.Fprintf(output, "selection: %s / %s\n", selection.Provider, selection.Model)
+			return err
+		default:
+			return fmt.Errorf("usage: /model [provider model]")
+		}
+	default:
+		return fmt.Errorf("unknown command %q", fields[0])
+	}
+}
+
+// listSelectableModels shows the current Selection and every Provider the
+// Agent can authenticate to with its Models, so Selection is only offered
+// from what works.
+func listSelectableModels(runner conversationRunner, providers *provider.Registry, output io.Writer) error {
+	selection := runner.Selection()
+	if _, err := fmt.Fprintf(output, "current selection: %s / %s\n", selection.Provider, selection.Model); err != nil {
+		return err
+	}
+	entries := providers.Authenticatable()
+	if len(entries) == 0 {
+		_, err := io.WriteString(output, "no providers can authenticate; declare providers in models.json and credentials in auth.json\n")
+		return err
+	}
+	for _, entry := range entries {
+		if _, err := fmt.Fprintf(output, "%s: %s\n", entry.Name, strings.Join(entry.Models, ", ")); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // reportGitResult surfaces Validation outcomes and Git recoverability to the

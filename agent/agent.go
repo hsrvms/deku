@@ -31,6 +31,13 @@ type Runner interface {
 	Turn(context.Context, string) (TurnResult, error)
 }
 
+// SelectionSource resolves the Adapter for a Selection. The provider
+// Registry is the production implementation; Agent seam tests substitute a
+// scripted source so each Selection runs against its own scripted Adapter.
+type SelectionSource interface {
+	Resolve(provider.Selection) (provider.Chat, error)
+}
+
 // TurnResult contains the completed model response and any usage reported by
 // the Provider. When Git safety is active it also reports the Validation
 // outcome and any Agent Commit or stash created during the Turn.
@@ -56,6 +63,8 @@ type ValidationResult struct {
 type Agent struct {
 	provider      provider.Chat
 	model         string
+	source        SelectionSource
+	selection     provider.Selection
 	session       *session.Session
 	output        io.Writer
 	input         *bufio.Reader
@@ -118,6 +127,26 @@ func NewWithGit(p provider.Chat, model string, conversation *session.Session, ou
 	return newAgent(p, model, conversation, output, input, registry, policy, nil, nil, exclude, repo, mode, validation, nil)
 }
 
+// NewWithSelection constructs an Agent whose Adapter comes from a Selection
+// resolved through source. The initial Selection is resolved immediately, so
+// an unknown Provider, an unknown Model, or a Provider the Agent cannot
+// authenticate to fails construction with an explicit error. Between Turns
+// the caller changes the active Selection with SetSelection; the override is
+// recorded in the Session and restored on resume.
+func NewWithSelection(source SelectionSource, selection provider.Selection, conversation *session.Session, output io.Writer, input io.Reader, registry *tool.Registry, policy approval.Policy, exclude []string, repo *repository.Repo, mode repository.Mode, validation string) (*Agent, error) {
+	if source == nil {
+		return nil, errors.New("selection source is required")
+	}
+	adapter, err := source.Resolve(selection)
+	if err != nil {
+		return nil, err
+	}
+	agent := newAgent(adapter, selection.Model, conversation, output, input, registry, policy, nil, nil, exclude, repo, mode, validation, nil)
+	agent.source = source
+	agent.selection = selection
+	return agent, nil
+}
+
 func newAgent(p provider.Chat, model string, conversation *session.Session, output io.Writer, input io.Reader, registry *tool.Registry, policy approval.Policy, gate approval.Decider, toolErr error, exclude []string, repo *repository.Repo, mode repository.Mode, validationCmd string, sink activity.Sink) *Agent {
 	if output == nil {
 		output = io.Discard
@@ -174,6 +203,51 @@ func newAgent(p provider.Chat, model string, conversation *session.Session, outp
 // defaultValidationCommand is the check run after a completed Turn before an
 // Agent Commit. Callers may override it through configuration.
 const defaultValidationCommand = "go test ./..."
+
+// SetSelection changes the active Selection between Turns. The new Selection
+// is resolved and validated first, then recorded in the Session transcript,
+// and only then applied: a failed resolution leaves the active Selection
+// untouched and records nothing. The change applies to subsequent Turns. An
+// Agent constructed without a Selection source has a fixed Provider and
+// cannot change Selection.
+func (a *Agent) SetSelection(selection provider.Selection) error {
+	if a == nil {
+		return errors.New("agent is nil")
+	}
+	if a.source == nil {
+		return errors.New("agent has no Selection source; construct it with NewWithSelection to change Selection")
+	}
+	if a.session == nil {
+		return errors.New("agent session is required")
+	}
+
+	a.turnMu.Lock()
+	defer a.turnMu.Unlock()
+
+	adapter, err := a.source.Resolve(selection)
+	if err != nil {
+		return err
+	}
+	if err := a.session.RecordSelection(session.Selection{Provider: selection.Provider, Model: selection.Model}); err != nil {
+		return fmt.Errorf("record selection: %w", err)
+	}
+	a.provider = adapter
+	a.model = selection.Model
+	a.selection = selection
+	return nil
+}
+
+// Selection returns the Agent's active Selection. An Agent constructed
+// without a Selection source has a fixed Provider and reports the zero
+// Selection.
+func (a *Agent) Selection() provider.Selection {
+	if a == nil {
+		return provider.Selection{}
+	}
+	a.turnMu.Lock()
+	defer a.turnMu.Unlock()
+	return a.selection
+}
 
 // Turn accepts one user request and drives Provider Steps until the model
 // returns a response without Tool Calls.

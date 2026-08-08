@@ -2,17 +2,17 @@
 // Home directory, a Repository's Project Config, a Deku Home .env file, and
 // the process environment, applying Config Precedence (defaults < Deku Home
 // modules < Project Config < environment-as-source) and Env Substitution
-// (${VAR} / ${VAR:-default}) to every value, and validating required fields at
-// startup.
+// (${VAR} / ${VAR:-default}) to every value.
 //
 // Configuration is split by risk into three optional modules per scope:
-// settings.json (behavior), auth.json (credentials), and models.json (the
-// non-secret Provider declaration). A missing module is simply absent. Project
-// Config lives in a .deku directory at the repository top level and is loaded
-// only after the user grants the project Trust; an untrusted project is
-// ignored entirely. The Deku Home .env file is auto-loaded as a source of
-// environment values for secrets and endpoints; the real process environment
-// always wins over it.
+// settings.json (behavior and the default Selection), auth.json (named
+// credentials), and models.json (the Provider Registry's non-secret
+// declaration). A missing module is simply absent. Project Config lives in a
+// .deku directory at the repository top level and is loaded only after the
+// user grants the project Trust; an untrusted project is ignored entirely.
+// The Deku Home .env file is auto-loaded as a source of environment values
+// for secrets and endpoints; the real process environment always wins over
+// it.
 package config
 
 import (
@@ -21,6 +21,8 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+
+	"github.com/hsrvms/deku/provider"
 )
 
 // Module file names under the Deku Home directory or a Repository's .deku
@@ -37,7 +39,15 @@ const (
 
 // Config holds all configuration for Deku.
 type Config struct {
-	Provider     ProviderConfig
+	// Providers is the Provider Registry's non-secret declaration, keyed by
+	// Provider name. Auth holds the named credentials the Providers reference;
+	// the two are separate so secrets never travel with shared configuration.
+	Providers map[string]provider.Provider
+	Auth      map[string]provider.Authentication
+	// Selection is the default Selection for the session, from
+	// defaultProvider and defaultModel. A per-Session override recorded in
+	// the Session takes precedence over it at runtime.
+	Selection    provider.Selection
 	Approval     ApprovalConfig
 	RepoMap      RepoMapConfig
 	AgentCommits AgentCommitsConfig
@@ -59,13 +69,6 @@ type ProjectScope struct {
 	Present bool
 	Trusted bool
 	Loaded  bool
-}
-
-// ProviderConfig holds the OpenAI-compatible provider declaration.
-type ProviderConfig struct {
-	Endpoint string
-	APIKey   string
-	Model    string
 }
 
 // ApprovalConfig holds Approval classification overrides. Tools maps a tool
@@ -90,10 +93,13 @@ type AgentCommitsConfig struct {
 	Validation string
 }
 
-// settingsFile mirrors the structure of ~/.deku/settings.json, the behavior
-// module.
+// settingsFile mirrors the structure of settings.json, the behavior module.
+// DefaultProvider and DefaultModel name the default Selection for the
+// session.
 type settingsFile struct {
-	Approval struct {
+	DefaultProvider string `json:"defaultProvider"`
+	DefaultModel    string `json:"defaultModel"`
+	Approval        struct {
 		Tools    map[string]string `json:"tools"`
 		Defaults map[string]string `json:"defaults"`
 	} `json:"approval"`
@@ -106,17 +112,15 @@ type settingsFile struct {
 	} `json:"agent_commits"`
 }
 
-// authFile mirrors the structure of ~/.deku/auth.json, the credentials
-// module.
-type authFile struct {
-	APIKey string `json:"api_key"`
-}
+// authEntries mirrors the structure of auth.json, the credentials module: a
+// map from Authentication name to the typed credential.
+type authEntries map[string]provider.Authentication
 
-// modelsFile mirrors the structure of ~/.deku/models.json, the non-secret
-// Provider declaration module.
+// modelsFile mirrors the structure of models.json, the Provider Registry's
+// non-secret declaration: a map from Provider name to its Adapter family,
+// base URL, Authentication name, and Model Registry.
 type modelsFile struct {
-	Endpoint string `json:"endpoint"`
-	Model    string `json:"model"`
+	Providers map[string]provider.Provider `json:"providers"`
 }
 
 // trustFile is the Project Trust record: the list of repository roots whose
@@ -125,14 +129,9 @@ type trustFile struct {
 	Projects []string `json:"projects"`
 }
 
-// These are the real process environment variables that form the
-// environment-as-source layer, the highest Config Precedence source.
-const (
-	envKeyEndpoint      = "DEKU_PROVIDER_ENDPOINT"
-	envKeyAPIKey        = "DEKU_PROVIDER_API_KEY"
-	envKeyModel         = "DEKU_PROVIDER_MODEL"
-	envKeyAgentCommMode = "DEKU_AGENT_COMMITS"
-)
+// envKeyAgentCommMode is the environment-as-source override for the Agent
+// Commits mode.
+const envKeyAgentCommMode = "DEKU_AGENT_COMMITS"
 
 // lookup resolves an environment value. The real process environment wins;
 // the Deku Home .env file is the fallback.
@@ -144,9 +143,16 @@ type lookup func(string) (string, bool)
 // in Config Precedence order: built-in defaults, then the Deku Home modules,
 // then Project Config, then the environment as the highest-precedence source.
 // Values from the modules may be literals or Env Substitution placeholders
-// (${VAR} / ${VAR:-default}); a literal value overrides an environment
-// placeholder. Each module is a section replaced as a whole by the next
-// higher-precedence scope that carries it; a missing module is simply absent.
+// (${VAR} / ${VAR:-default}). Each module is a section replaced as a whole by
+// the next higher-precedence scope that carries it; a missing module is
+// simply absent.
+//
+// Providers and their Authentication are parsed but not validated against
+// each other here: the provider Registry is responsible for structural
+// validation and for reporting entries that cannot authenticate. An
+// Authentication whose key placeholder does not resolve is kept with an empty
+// key, so a Provider with a missing secret is excluded from Selection rather
+// than failing the whole startup.
 //
 // projectRoot is the top-level directory of the Repository ("" when the
 // process is not inside a Git repository, in which case there is no project
@@ -155,9 +161,8 @@ type lookup func(string) (string, bool)
 // project's files are never read. cfg.Project reports the project scope
 // outcome for the caller to surface.
 //
-// Returns an error when a required value is missing, a placeholder references
-// an unset variable with no default, a module or .env file is malformed, or
-// the trust record is malformed.
+// Returns an error when a module or .env file is malformed, or the trust
+// record is malformed.
 func Load(projectRoot string) (*Config, error) {
 	home, err := os.UserHomeDir()
 	if err != nil {
@@ -175,7 +180,7 @@ func Load(projectRoot string) (*Config, error) {
 	if err != nil {
 		return nil, err
 	}
-	globalAuth, err := loadModule[authFile](dekuHome, authModule)
+	globalAuth, err := loadModule[authEntries](dekuHome, authModule)
 	if err != nil {
 		return nil, err
 	}
@@ -215,7 +220,7 @@ func Load(projectRoot string) (*Config, error) {
 				settings = projectSettings
 				loaded = true
 			}
-			if projectAuth, err := loadModule[authFile](projectDir, authModule); err != nil {
+			if projectAuth, err := loadModule[authEntries](projectDir, authModule); err != nil {
 				return nil, err
 			} else if projectAuth != nil {
 				auth = projectAuth
@@ -235,19 +240,47 @@ func Load(projectRoot string) (*Config, error) {
 		cfg.Approval.Tools = settings.Approval.Tools
 		cfg.Approval.Defaults = settings.Approval.Defaults
 		cfg.RepoMap.Exclude = settings.RepoMap.Exclude
+		cfg.Selection.Provider = resolveOptional(settings.DefaultProvider, resolve)
+		cfg.Selection.Model = resolveOptional(settings.DefaultModel, resolve)
 	}
 	cfg.AgentCommits.Mode = resolveString("off", moduleValue(settings, func(s *settingsFile) string { return s.AgentCommits.Mode }), envValue(resolve, envKeyAgentCommMode), resolve)
 	cfg.AgentCommits.Validation = resolveString("go test ./...", moduleValue(settings, func(s *settingsFile) string { return s.AgentCommits.Validation }), "", resolve)
+	cfg.Providers = declaredProviders(models, resolve)
+	cfg.Auth = resolvedAuth(auth, resolve)
 
-	var errs []string
-	cfg.Provider.Endpoint, errs = resolveRequired("provider endpoint", envKeyEndpoint, "endpoint", modelsModule, moduleValue(models, func(m *modelsFile) string { return m.Endpoint }), envValue(resolve, envKeyEndpoint), resolve, errs)
-	cfg.Provider.APIKey, errs = resolveRequired("provider API key", envKeyAPIKey, "api_key", authModule, moduleValue(auth, func(a *authFile) string { return a.APIKey }), envValue(resolve, envKeyAPIKey), resolve, errs)
-	cfg.Provider.Model, errs = resolveRequired("provider model", envKeyModel, "model", modelsModule, moduleValue(models, func(m *modelsFile) string { return m.Model }), envValue(resolve, envKeyModel), resolve, errs)
-
-	if len(errs) > 0 {
-		return nil, fmt.Errorf("configuration is incomplete: %s", strings.Join(errs, "; "))
-	}
 	return cfg, nil
+}
+
+// declaredProviders resolves the Provider Registry declaration from the
+// models module, filling each entry's Name from its map key and applying Env
+// Substitution to the base URL. A nil module yields no Providers.
+func declaredProviders(models *modelsFile, resolve lookup) map[string]provider.Provider {
+	if models == nil || len(models.Providers) == 0 {
+		return nil
+	}
+	entries := make(map[string]provider.Provider, len(models.Providers))
+	for name, entry := range models.Providers {
+		entry.Name = name
+		entry.BaseURL = resolveOptional(entry.BaseURL, resolve)
+		entries[name] = entry
+	}
+	return entries
+}
+
+// resolvedAuth resolves the named credentials from the auth module, applying
+// Env Substitution to every API key. A key whose placeholder does not resolve
+// is kept empty: the Provider referencing it simply cannot authenticate until
+// the secret is supplied. A nil module yields no Authentication.
+func resolvedAuth(auth *authEntries, resolve lookup) map[string]provider.Authentication {
+	if auth == nil || len(*auth) == 0 {
+		return nil
+	}
+	entries := make(map[string]provider.Authentication, len(*auth))
+	for name, credential := range *auth {
+		credential.APIKey = resolveOptional(credential.APIKey, resolve)
+		entries[name] = credential
+	}
+	return entries
 }
 
 // loadModule loads one optional module file named name from dir. An absent
@@ -370,28 +403,20 @@ func resolveString(def, file, env string, resolve lookup) string {
 	return def
 }
 
-// resolveRequired applies Config Precedence and Env Substitution to a required
-// string field, appending a clear error to errs when no source yields a value.
-// moduleName and fieldName name where the value belongs so the error points
-// at the right module file.
-func resolveRequired(displayName, envName, fieldName, moduleName, file, env string, resolve lookup, errs []string) (string, []string) {
-	if env != "" {
-		return env, errs
+// resolveOptional applies Env Substitution to an optional value that has no
+// built-in default and no environment-as-source override. An unresolvable
+// placeholder yields "": the value is absent rather than a startup failure,
+// so an unset secret makes its Provider unauthenticatable instead of blocking
+// every other Provider.
+func resolveOptional(value string, resolve lookup) string {
+	if value == "" {
+		return ""
 	}
-	if file == "" {
-		errs = append(errs, fmt.Sprintf("%s is required: set %s or the %q field in ~/.deku/%s", displayName, envName, fieldName, moduleName))
-		return "", errs
-	}
-	resolved, err := expand(file, resolve)
+	resolved, err := expand(value, resolve)
 	if err != nil {
-		errs = append(errs, fmt.Sprintf("%s: %v", displayName, err))
-		return "", errs
+		return ""
 	}
-	if resolved == "" {
-		errs = append(errs, fmt.Sprintf("%s resolved to an empty value", displayName))
-		return "", errs
-	}
-	return resolved, errs
+	return resolved
 }
 
 // expand resolves Env Substitution placeholders in s: ${VAR} is replaced with

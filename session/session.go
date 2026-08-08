@@ -1,5 +1,8 @@
-// Package session persists an immutable, append-only JSONL message log and
-// reconstructs Session history when resumed.
+// Package session persists an immutable, append-only JSONL transcript and
+// reconstructs Session history when resumed. The transcript holds the
+// conversation messages and per-Session Selection records; messages written
+// before Selection records existed are bare message lines and resume
+// unchanged.
 package session
 
 import (
@@ -41,11 +44,34 @@ type Message struct {
 	ToolCalls  []ToolCall `json:"tool_calls,omitempty"`
 }
 
+// Selection is a recorded Provider and Model choice that overrides the
+// configured default Selection for one Session. It applies to the Turns
+// after it is recorded and is restored when the Session resumes.
+type Selection struct {
+	Provider string `json:"provider"`
+	Model    string `json:"model"`
+}
+
+// Transcript record types. Message lines carry no type: they predate the
+// typed records and are read as messages when the type is absent.
+const (
+	recordTypeSelection = "selection"
+)
+
+// transcriptRecord is one typed JSONL line. Exactly one payload is set for a
+// valid record.
+type transcriptRecord struct {
+	Type      string     `json:"type"`
+	Selection *Selection `json:"selection,omitempty"`
+}
+
 // Session is an append-only conversation stored by a Store.
 type Session struct {
 	ID        string
 	CreatedAt time.Time
 	Messages  []Message
+
+	selection *Selection
 
 	store *Store
 	mu    sync.Mutex
@@ -62,13 +88,7 @@ func (s *Session) Path() string {
 // Append persists message as one new JSONL record and adds it to the in-memory
 // history only after the file write succeeds.
 func (s *Session) Append(message Message) error {
-	if s == nil {
-		return errors.New("session is nil")
-	}
-	if s.store == nil {
-		return errors.New("session has no store")
-	}
-	if err := validateSessionID(s.ID); err != nil {
+	if err := s.writable(); err != nil {
 		return err
 	}
 	if err := validateMessage(message); err != nil {
@@ -84,6 +104,59 @@ func (s *Session) Append(message Message) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
+	if err := s.appendRecord(data); err != nil {
+		return err
+	}
+	s.Messages = append(s.Messages, message)
+	return nil
+}
+
+// RecordSelection appends a Selection record to the transcript, making it the
+// Session's active override. The record is immutable once written; a later
+// RecordSelection supersedes it. Both the Provider and the Model are
+// required: a partial override is never recorded.
+func (s *Session) RecordSelection(selection Selection) error {
+	if err := s.writable(); err != nil {
+		return err
+	}
+	if strings.TrimSpace(selection.Provider) == "" {
+		return errors.New("selection provider is required")
+	}
+	if strings.TrimSpace(selection.Model) == "" {
+		return errors.New("selection model is required")
+	}
+
+	record := transcriptRecord{Type: recordTypeSelection, Selection: &selection}
+	data, err := json.Marshal(record)
+	if err != nil {
+		return fmt.Errorf("encode session selection: %w", err)
+	}
+	data = append(data, '\n')
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if err := s.appendRecord(data); err != nil {
+		return err
+	}
+	s.selection = &selection
+	return nil
+}
+
+// writable validates that the Session can accept a new transcript record.
+func (s *Session) writable() error {
+	if s == nil {
+		return errors.New("session is nil")
+	}
+	if s.store == nil {
+		return errors.New("session has no store")
+	}
+	return validateSessionID(s.ID)
+}
+
+// appendRecord writes one JSONL record line to the Session file. The caller
+// must hold s.mu.
+func (s *Session) appendRecord(data []byte) error {
 	file, err := os.OpenFile(s.Path(), os.O_WRONLY|os.O_APPEND, 0)
 	if err != nil {
 		return fmt.Errorf("open session %q for append: %w", s.ID, err)
@@ -99,9 +172,22 @@ func (s *Session) Append(message Message) error {
 	if closeErr != nil {
 		return fmt.Errorf("close session %q: %w", s.ID, closeErr)
 	}
-
-	s.Messages = append(s.Messages, message)
 	return nil
+}
+
+// LatestSelection returns the last Selection recorded in the Session, whether
+// during this run or restored on resume. The boolean reports whether any
+// override exists; without one the configured default Selection applies.
+func (s *Session) LatestSelection() (Selection, bool) {
+	if s == nil {
+		return Selection{}, false
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.selection == nil {
+		return Selection{}, false
+	}
+	return *s.selection, true
 }
 
 // Store owns Session files in one directory.
@@ -172,7 +258,8 @@ func (s *Store) Create() (*Session, error) {
 	return nil, errors.New("create session: could not generate a unique ID")
 }
 
-// Resume opens an existing Session and reconstructs its complete message log.
+// Resume opens an existing Session and reconstructs its complete transcript:
+// the conversation messages and the latest recorded Selection override.
 func (s *Store) Resume(id string) (resumed *Session, err error) {
 	if s == nil {
 		return nil, errors.New("session store is nil")
@@ -205,7 +292,7 @@ func (s *Store) Resume(id string) (resumed *Session, err error) {
 		return nil, fmt.Errorf("stat session %q: %w", id, err)
 	}
 
-	messages, err := readMessages(file, id)
+	messages, selection, err := readTranscript(file, id)
 	if err != nil {
 		return nil, err
 	}
@@ -218,14 +305,20 @@ func (s *Store) Resume(id string) (resumed *Session, err error) {
 		ID:        id,
 		CreatedAt: createdAt,
 		Messages:  messages,
+		selection: selection,
 		store:     s,
 	}, nil
 }
 
-func readMessages(reader io.Reader, id string) ([]Message, error) {
+// readTranscript reconstructs the conversation messages and the latest
+// Selection record from a Session file. Lines without a record type are
+// conversation messages; a line with an unknown type fails the resume so a
+// corrupted transcript is never silently truncated.
+func readTranscript(reader io.Reader, id string) ([]Message, *Selection, error) {
 	scanner := bufio.NewScanner(reader)
 	scanner.Buffer(make([]byte, 64*1024), 10*1024*1024)
 	messages := make([]Message, 0)
+	var latest *Selection
 	line := 0
 	for scanner.Scan() {
 		line++
@@ -233,19 +326,34 @@ func readMessages(reader io.Reader, id string) ([]Message, error) {
 		if data == "" {
 			continue
 		}
-		var message Message
-		if err := json.Unmarshal([]byte(data), &message); err != nil {
-			return nil, fmt.Errorf("decode session %q record %d: %w", id, line, err)
+		var record transcriptRecord
+		if err := json.Unmarshal([]byte(data), &record); err != nil {
+			return nil, nil, fmt.Errorf("decode session %q record %d: %w", id, line, err)
 		}
-		if err := validateMessage(message); err != nil {
-			return nil, fmt.Errorf("validate session %q record %d: %w", id, line, err)
+		switch record.Type {
+		case "":
+			var message Message
+			if err := json.Unmarshal([]byte(data), &message); err != nil {
+				return nil, nil, fmt.Errorf("decode session %q record %d: %w", id, line, err)
+			}
+			if err := validateMessage(message); err != nil {
+				return nil, nil, fmt.Errorf("validate session %q record %d: %w", id, line, err)
+			}
+			messages = append(messages, message)
+		case recordTypeSelection:
+			if record.Selection == nil || strings.TrimSpace(record.Selection.Provider) == "" || strings.TrimSpace(record.Selection.Model) == "" {
+				return nil, nil, fmt.Errorf("validate session %q record %d: selection record requires a provider and a model", id, line)
+			}
+			selection := *record.Selection
+			latest = &selection
+		default:
+			return nil, nil, fmt.Errorf("session %q record %d has unknown type %q", id, line, record.Type)
 		}
-		messages = append(messages, message)
 	}
 	if err := scanner.Err(); err != nil {
-		return nil, fmt.Errorf("read session %q: %w", id, err)
+		return nil, nil, fmt.Errorf("read session %q: %w", id, err)
 	}
-	return messages, nil
+	return messages, latest, nil
 }
 
 func validateMessage(message Message) error {
