@@ -2,6 +2,8 @@
 
 **Status:** accepted
 
+**v1 scope note:** the Anthropic Messages Adapter — the second Adapter family, authenticated by API key — is committed to v1; the OAuth subscription flow for native subscriptions (claude, codex) remains deferred as its own feature, exactly as this ADR scoped it.
+
 Deku grows from one OpenAI-compatible Provider bound to a single Model at startup into a Provider Registry with runtime Selection. The former single "Provider" concept splits in two: an **Adapter** (the wire-format translator, still the `Chat(ctx, model, system, messages, tools)` interface) and a **Provider** (a named, configured account that declares an Adapter family, an optional base URL, its Authentication, and the Models it exposes). Authentication is typed — `api_key` or `oauth` — so a subscription provider (claude, codex) is simply a Provider whose Authentication is OAuth, while a custom provider (tokenrouter, openrouter, qwencloud) is a Provider authenticated by a static API key. Selection resolves which Provider and Model the Agent uses, from a `defaultProvider`/`defaultModel` default and a per-Session `/model` override.
 
 ## Considered options

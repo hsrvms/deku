@@ -6,6 +6,8 @@ Deku uses an agent-driven architecture (the model decides what to read and edit 
 
 Accepted.
 
+**Partially superseded by [0012-repository-map-ranking.md](0012-repository-map-ranking.md):** the token budget shipped in v0; tree-sitter parsing and request-ranked truncation land in v1; the conversation-adaptive ranking this ADR predicted for v2 is deferred to the later horizon.
+
 ## Considered Options
 
 ### Pure agent-driven (no map)

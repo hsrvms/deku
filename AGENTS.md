@@ -13,7 +13,7 @@ This file governs work in this repository. It supplements the repository's canon
 5. `docs/vision.md` describes enduring product intent; it is not a release specification.
 6. This guide defines engineering workflow and code-organization constraints.
 
-Before changing behavior, read `CONTEXT.md`, the active specification, and ADRs relevant to the affected module. Do not implement a roadmap item merely because it appears in the roadmap.
+Before changing behavior, read `CONTEXT.md`, the active specification, ADRs relevant to the affected module, and any design guide that governs the affected surface — the v1 terminal UI is governed by `docs/guides/tui-design.md`. Do not implement a roadmap item merely because it appears in the roadmap.
 
 ## v0 Architecture
 
