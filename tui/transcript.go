@@ -31,31 +31,69 @@ type transcriptEntry struct {
 }
 
 // renderTranscript lays the structured messages out as the viewport content:
-// a separator at each exchange boundary (before every user request), a
-// separated block for each Tool Output and Command Report, and plain text
-// everywhere else. width is the pane width the content is laid out at.
+// a separator above every user request and above the Agent's response that
+// follows it (the exchange boundary), and a separated block for each Tool
+// Output and Command Report; everything else stays plain. A separator is
+// never appended onto a message's last line — streamed model text usually
+// ends without a newline — and adjacent separators collapse into one, so a
+// response directly after a block's closing frame reads as a single line.
+// width is the pane width the content is laid out at.
 func renderTranscript(entries []transcriptEntry, width int) string {
 	var b strings.Builder
-	for _, e := range entries {
+	// atLineStart reports that the builder ends at a line boundary;
+	// lineIsRule that its last line is a separator. They keep separators on
+	// their own lines and collapse adjacent ones.
+	atLineStart, lineIsRule := true, false
+	emitSeparator := func() {
+		if lineIsRule {
+			return
+		}
+		if !atLineStart {
+			b.WriteByte('\n')
+		}
+		b.WriteString(separator(width))
+		atLineStart, lineIsRule = true, true
+	}
+	writeText := func(s string) {
+		b.WriteString(s)
+		if s != "" {
+			atLineStart = s[len(s)-1] == '\n'
+			lineIsRule = false
+		}
+	}
+	for i, e := range entries {
 		switch e.kind {
 		case msgUser:
-			b.WriteString(rule(width))
-			b.WriteString(lipgloss.NewStyle().Foreground(palette.user).Width(width).Align(lipgloss.Right).Render(e.text))
+			emitSeparator()
+			writeText(lipgloss.NewStyle().Foreground(palette.user).Width(width).Align(lipgloss.Right).Render(e.text))
 			b.WriteByte('\n')
+			atLineStart, lineIsRule = true, false
 		case msgToolOutput, msgCommandReport:
-			b.WriteString(rule(width))
-			b.WriteString(e.text)
-			b.WriteString(rule(width))
-		default:
-			b.WriteString(e.text)
+			emitSeparator()
+			writeText(e.text)
+			emitSeparator()
+		case msgText:
+			if responseStart(entries, i) {
+				emitSeparator()
+			}
+			writeText(e.text)
 		}
 	}
 	return b.String()
 }
 
-// rule is a full-width section separator marking an exchange boundary or
-// framing a typed block. It is gray so it never reads as a state.
-func rule(width int) string {
+// responseStart reports whether the msgText entry at i opens the Agent's
+// response: it directly follows the user request or a typed block of the
+// same exchange, so a separator belongs above it.
+func responseStart(entries []transcriptEntry, i int) bool {
+	return i > 0 && (entries[i-1].kind == msgUser ||
+		entries[i-1].kind == msgToolOutput ||
+		entries[i-1].kind == msgCommandReport)
+}
+
+// separator is a full-width section separator marking an exchange boundary
+// or framing a typed block. It is gray so it never reads as a state.
+func separator(width int) string {
 	if width <= 0 {
 		width = 80
 	}

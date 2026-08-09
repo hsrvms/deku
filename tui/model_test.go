@@ -291,8 +291,14 @@ func TestSeparatorsFrameExchangesAndBlocksInSequence(t *testing.T) {
 	if _, err := m.Write([]byte("Tool output (read, read):\n  main.go\n")); err != nil {
 		t.Fatalf("Write() error = %v", err)
 	}
+	// The response opens directly after the block's closing frame; its
+	// separator must collapse into that frame, not add a second rule.
+	if _, err := m.Write([]byte("inspected")); err != nil {
+		t.Fatalf("Write() error = %v", err)
+	}
 
-	// One rule above the user message, two around the Tool Output block.
+	// One rule above the user message, two around the Tool Output block
+	// (the block's closing rule doubles as the response opening).
 	if got := ruleLines(m.View()); got != 3 {
 		t.Errorf("separators = %d, want 3 (exchange boundary and block frame)", got)
 	}
@@ -803,5 +809,38 @@ func TestRealAgentTurnRendersTypedBlocksEndToEnd(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(root, "notes.txt")); err != nil {
 		t.Fatalf("approved write did not create the file: %v", err)
+	}
+}
+
+func TestSeparatorAboveResponseAndNeverOnItsLastLine(t *testing.T) {
+	m := newTestModel(io.Discard)
+	m.SetRunner(&stubRunner{})
+
+	typeText(m, "first")
+	_, cmd := m.Update(enterKey())
+	completeTurn(t, m, cmd)
+	// Model text streams without a trailing newline, as the Agent writes it.
+	if _, err := m.Write([]byte("done")); err != nil {
+		t.Fatalf("Write() error = %v", err)
+	}
+	// The next exchange's boundary separator must land under the response,
+	// never on its last line.
+	typeText(m, "second")
+	_, cmd = m.Update(enterKey())
+	_ = cmd
+
+	view := m.View()
+	// One separator above the first user request, one above its response,
+	// one above the second user request.
+	if got := ruleLines(view); got != 3 {
+		t.Errorf("separators = %d, want 3", got)
+	}
+	for _, line := range strings.Split(stripANSI(view), "\n") {
+		if strings.Contains(line, "done") && strings.Contains(line, "─") {
+			t.Errorf("separator intercepts the response line %q", line)
+		}
+	}
+	if line := userMessageLine(view, "second"); !strings.HasPrefix(strings.TrimSpace(line), "second") {
+		t.Errorf("second user message missing, got %q", view)
 	}
 }
