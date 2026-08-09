@@ -24,17 +24,25 @@ This guide explicitly rejects the pi-style full chrome — editor panes, modal c
 ## 3. Panes
 
 ```
-┌ transcript (main) ────────────┬─ turn diff (auto-opens on first Change) ─┐
-│  streaming conversation,      │  cumulative working-tree diff per file   │
-│  scrollable                   │  for the current Turn                    │
-├───────────────────────────────┴──────────────────────────────────────────┤
-│  ● thinking · tool: read · provider/model     ← status bar               │
+┌ transcript (main) ─────────────────────────────────────────────────────┐
+│  streaming conversation, scrollable; the Turn Diff block auto-opens    │
+│  on a Turn's first Change inside the Agent's response section and      │
+│  grows in place (Ctrl+T toggles the current Turn's block)              │
+├────────────────────────────────────────────────────────────────────────┤
+│  ● thinking · tool: read · provider/model     ← status bar             │
 │  > _                                                                    │
-└──────────────────────────────────────────────────────────────────────────┘
+└────────────────────────────────────────────────────────────────────────┘
 ```
 
+The Turn Diff renders as a **typed block inside the Agent's response
+section** of the Transcript — not a separate pane — so the Transcript stays
+the single scrollable main area: the block appears at the first `Change`
+event of a Turn, grows in place as the cumulative diff extends, and remains
+in the Transcript as that Turn's history. The status bar and the input line
+never move.
+
 1. **Transcript pane** — the conversation; streams `TextDelta` output incrementally; scrollable in normal mode and with `Ctrl+E`/`Ctrl+Y` from any mode.
-2. **Turn Diff pane** — auto-opens on the first `Change` event of a Turn; shows the *cumulative* per-file working-tree diff of the Turn's Edits and Writes (never per-edit snapshots, so a second Edit to the same file extends the first, not replaces it); Writes of new files appear as new-file entries; keeps showing the completed Turn's diff until the next Turn begins; toggleable (§5).
+2. **Turn Diff block** — auto-opens on the first `Change` event of a Turn as a block inside the Agent's response section; shows the *cumulative* per-file working-tree diff of the Turn's Edits and Writes (never per-edit snapshots, so a second Edit to the same file extends the first, not replaces it); Writes of new files appear as new-file entries; the completed Turn's block stays in the Transcript until the next Turn begins — and remains there as history; Ctrl+T toggles the current Turn's block.
 3. **Status bar** — the Working Indicator (label + glyph + color, triple redundancy per §6), the active Tool while working, and the current Provider/Model.
 4. **Input line** — single-line, vim-mode, with command history; **Approval renders here**, not in a modal: the input line becomes the Command Report prompt and the status bar shows `awaiting-approval`, so the user approves the exact action (ADR-0009) without an overlay stealing focus.
 
@@ -42,7 +50,7 @@ This guide explicitly rejects the pi-style full chrome — editor panes, modal c
 
 - Each pane is a self-contained component with a fixed contract: it consumes activity events and renders only its own region. Panes never emit activity; the Agent remains the sole emitter (ADR-0010).
 - Components use **semantic tokens only** (§6); raw colors are not allowed in component code.
-- Shared components: the vim-mode single-line input (one implementation, used by input and Approval prompts) and a scrollable viewport wrapper (used by Transcript and Turn Diff).
+- Shared components: the vim-mode single-line input (one implementation, used by input and Approval prompts) and a scrollable viewport wrapper (used by the Transcript, which hosts the Turn Diff block).
 - Refused tool calls surface in the stream via the existing Tool Output machinery; the renderer must show the refusal reason, not drop it.
 
 ## 5. Keybinding policy

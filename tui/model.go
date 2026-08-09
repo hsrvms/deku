@@ -54,6 +54,19 @@ type Model struct {
 	viewport     viewport.Model
 	follow       bool // pin the Transcript to the newest content
 
+	// Turn Diff block state. diff is the seam the renderer computes the
+	// cumulative working-tree diff through; the remaining fields track the
+	// current Turn's path set and the block's visibility and Transcript
+	// entry.
+	diff          diffFunc
+	diffOpen      bool
+	diffEntryIdx  int // Transcript index of the current Turn's block, -1 before the first Change
+	turnDiffPaths map[string]bool
+	diffOrder     []string
+	diffCache     map[string]string
+	diffErr       error
+	diffDirty     bool
+
 	repaint chan struct{} // coalesced redraw triggers for the forwarder
 
 	width      int
@@ -70,11 +83,14 @@ type Model struct {
 // as its output Writer and activity Sink.
 func New(provider, model string, approval io.Writer) *Model {
 	return &Model{
-		provider: provider,
-		model:    model,
-		approval: approval,
-		follow:   true,
-		repaint:  make(chan struct{}, 1),
+		provider:      provider,
+		model:         model,
+		approval:      approval,
+		follow:        true,
+		repaint:       make(chan struct{}, 1),
+		diff:          gitDiff(),
+		diffEntryIdx:  -1,
+		turnDiffPaths: make(map[string]bool),
 	}
 }
 
@@ -140,7 +156,7 @@ func (m *Model) appendEntry(kind messageKind, text string) {
 // streamed output and the program loop never race on the pane.
 func (m *Model) appendEntryLocked(kind messageKind, text string) {
 	m.transcript = append(m.transcript, transcriptEntry{kind: kind, text: text})
-	m.viewport.SetContent(renderTranscript(m.transcript, m.paneWidthLocked()))
+	m.refreshTranscriptLocked()
 }
 
 // Indicator implements activity.Sink: the status bar's Working Indicator.
@@ -160,11 +176,28 @@ func (m *Model) ActiveTool(name string) {
 	m.notify()
 }
 
-// Change implements activity.Sink. The shell keeps the Change set the seam
-// delivers; the Turn Diff pane (#65) renders it.
+// Change implements activity.Sink: the Change records the cumulative
+// per-file working-tree path set the Turn Diff block renders. The first
+// Change of a Turn auto-opens the block inside the Agent's response section
+// of the Transcript; every Change marks the diff dirty, because the working
+// tree changed and the cumulative diff must be recomputed — a second Edit to
+// the same file extends the first (CONTEXT.md: Turn Diff).
 func (m *Model) Change(c activity.Change) {
 	m.mu.Lock()
 	m.changes = append(m.changes, c)
+	if m.turnActive {
+		m.diffDirty = true
+		if _, seen := m.turnDiffPaths[c.Path]; !seen {
+			m.turnDiffPaths[c.Path] = true
+			m.diffOrder = append(m.diffOrder, c.Path)
+			if m.diffEntryIdx < 0 {
+				m.diffEntryIdx = len(m.transcript)
+				m.diffOpen = true
+				m.transcript = append(m.transcript, transcriptEntry{kind: msgTurnDiff})
+				m.refreshTranscriptLocked()
+			}
+		}
+	}
 	m.mu.Unlock()
 	m.notify()
 }
@@ -268,8 +301,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.width = msg.Width
 		m.height = msg.Height
 		m.mu.Lock()
-		m.viewport.Width = msg.Width
-		m.viewport.Height = m.paneHeight()
+		m.refreshTranscriptLocked()
 		m.mu.Unlock()
 	case tea.KeyMsg:
 		switch msg.Type {
@@ -277,6 +309,8 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, tea.Quit
 		case tea.KeyEnter:
 			return m, m.submit()
+		case tea.KeyCtrlT:
+			m.toggleDiff()
 		case tea.KeyPgUp:
 			m.scrollUp(m.paneHeight())
 		case tea.KeyPgDown:
@@ -303,7 +337,9 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.scrollDown(wheelScrollLines)
 		}
 	case turnResultMsg:
+		m.mu.Lock()
 		m.turnActive = false
+		m.mu.Unlock()
 		if msg.err != nil {
 			m.Append("deku: " + msg.err.Error() + "\n")
 		} else if report := formatResult(msg.result); report != "" {
@@ -346,7 +382,20 @@ func (m *Model) submit() tea.Cmd {
 		return nil
 	}
 	m.appendEntry(msgUser, request)
+	m.mu.Lock()
+	// A new Turn starts a fresh Turn Diff: the block re-opens on the new
+	// Turn's first Change, while the completed Turn's block stays in the
+	// Transcript as its history.
+	m.turnDiffPaths = make(map[string]bool)
+	m.diffOrder = nil
+	m.diffCache = nil
+	m.diffErr = nil
+	m.diffDirty = true
+	m.diffOpen = false
+	m.diffEntryIdx = -1
 	m.turnActive = true
+	m.refreshTranscriptLocked()
+	m.mu.Unlock()
 	return func() tea.Msg {
 		result, err := m.runner.Turn(context.Background(), request)
 		return turnResultMsg{result: result, err: err}
@@ -376,6 +425,55 @@ func (m *Model) dispatchCommand(line string) {
 	}
 }
 
+// toggleDiff hides and shows the current Turn's Turn Diff block. A completed
+// Turn's block stays in the Transcript as history either way.
+func (m *Model) toggleDiff() {
+	m.mu.Lock()
+	m.diffOpen = !m.diffOpen
+	m.refreshTranscriptLocked()
+	m.mu.Unlock()
+}
+
+// refreshDiff recomputes the Turn Diff when the path set changed since the
+// last render and writes the block's content. The diff runs outside the lock
+// so the Agent's Sink calls never wait on git; a Change that arrives
+// mid-compute marks the block dirty again and the next View recomputes.
+func (m *Model) refreshDiff() {
+	m.mu.Lock()
+	if !m.diffOpen || !m.diffDirty {
+		m.mu.Unlock()
+		return
+	}
+	paths := append([]string(nil), m.diffOrder...)
+	runner := m.diff
+	m.diffDirty = false
+	m.mu.Unlock()
+
+	diffs, err := runner(paths)
+	m.mu.Lock()
+	m.diffCache = diffs
+	m.diffErr = err
+	if m.diffEntryIdx >= 0 && m.diffEntryIdx < len(m.transcript) {
+		m.transcript[m.diffEntryIdx].text = formatTurnDiff(diffs, m.diffOrder, err)
+	}
+	m.refreshTranscriptLocked()
+	m.mu.Unlock()
+}
+
+// refreshTranscriptLocked re-lays the Transcript at the current pane size,
+// skipping the current Turn's Turn Diff block while it is toggled off.
+// Callers hold m.mu.
+func (m *Model) refreshTranscriptLocked() {
+	entries := m.transcript
+	if m.diffEntryIdx >= 0 && !m.diffOpen {
+		entries = append(append([]transcriptEntry(nil), m.transcript[:m.diffEntryIdx]...), m.transcript[m.diffEntryIdx+1:]...)
+	}
+	width, _ := m.size()
+	m.viewport.Width = width
+	m.viewport.Height = m.paneHeight()
+	m.viewport.SetContent(renderTranscript(entries, width))
+}
+
 // scrollUp moves the Transcript view toward the top and leaves the pinned
 // follow position; scrollDown moves toward the newest content and re-pins
 // once the bottom is reached.
@@ -395,10 +493,12 @@ func (m *Model) scrollDown(lines int) {
 	m.mu.Unlock()
 }
 
-// View implements tea.Model: the Transcript pane, the status bar, and the
-// input line.
+// View implements tea.Model: the Transcript pane — which hosts the Turn Diff
+// block inside the Agent's response section — the status bar, and the input
+// line. The layout never changes when the block appears.
 func (m *Model) View() string {
 	width, _ := m.size()
+	m.refreshDiff()
 	m.mu.Lock()
 	vp := m.viewport
 	m.mu.Unlock()
@@ -422,14 +522,6 @@ func (m *Model) View() string {
 func (m *Model) paneHeight() int {
 	_, height := m.size()
 	return max(1, height-2)
-}
-
-// paneWidthLocked is the Transcript pane's width, defaulting to 80 before the
-// first WindowSizeMsg (also how tests render). Callers hold m.mu, which
-// guards the width read against the program loop's WindowSizeMsg writes.
-func (m *Model) paneWidthLocked() int {
-	width, _ := m.size()
-	return width
 }
 
 // size returns the terminal dimensions, defaulting to 80x24 before the first
