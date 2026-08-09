@@ -151,11 +151,15 @@ func TestTurnErrorIsReported(t *testing.T) {
 
 func TestTranscriptStreamsOutputIncrementally(t *testing.T) {
 	m := newTestModel(io.Discard)
-	m.Write([]byte("Hello, "))
+	if _, err := m.Write([]byte("Hello, ")); err != nil {
+		t.Fatalf("Write() error = %v", err)
+	}
 	if view := m.View(); !strings.Contains(view, "Hello,") {
 		t.Errorf("Transcript must show the first chunk, got %q", view)
 	}
-	m.Write([]byte("world!"))
+	if _, err := m.Write([]byte("world!")); err != nil {
+		t.Fatalf("Write() error = %v", err)
+	}
 	if view := m.View(); !strings.Contains(view, "Hello, world!") {
 		t.Errorf("Transcript must accumulate chunks, got %q", view)
 	}
@@ -315,7 +319,9 @@ func TestTranscriptScrollsAndFollowsContent(t *testing.T) {
 	for i := 1; i <= 40; i++ {
 		fmt.Fprintf(&content, "line %02d\n", i)
 	}
-	m.Write([]byte(content.String()))
+	if _, err := m.Write([]byte(content.String())); err != nil {
+		t.Fatalf("Write() error = %v", err)
+	}
 
 	// The view follows the newest content by default.
 	if view := m.View(); !strings.Contains(view, "line 40") {
@@ -342,7 +348,9 @@ func TestTranscriptScrollsAndFollowsContent(t *testing.T) {
 	}
 
 	// New content must not yank a reader who scrolled up.
-	m.Write([]byte("line 41\n"))
+	if _, err := m.Write([]byte("line 41\n")); err != nil {
+		t.Fatalf("Write() error = %v", err)
+	}
 	if view := m.View(); strings.Contains(view, "line 41") {
 		t.Errorf("new content must not move a scrolled-up view, got %q", view)
 	}
@@ -455,7 +463,7 @@ func TestModelDrivesRealAgentTurn(t *testing.T) {
 		},
 	}
 	approvalReader, approvalWriter := io.Pipe()
-	defer approvalReader.Close()
+	defer func() { _ = approvalReader.Close() }()
 	m := New("tokenrouter", "qwen-2.5-coder", approvalWriter)
 	runner := agent.NewWithActivity(providerStub, "qwen-2.5-coder", conversation, m, approvalReader, registry, approval.DefaultPolicy(), nil, m)
 	m.SetRunner(runner)
@@ -557,7 +565,7 @@ func TestProgramLoopStreamsRealAgentTurnEndToEnd(t *testing.T) {
 		},
 	}
 	approvalReader, approvalWriter := io.Pipe()
-	defer approvalReader.Close()
+	defer func() { _ = approvalReader.Close() }()
 	m := New("tokenrouter", "qwen-2.5-coder", approvalWriter)
 	source := &scriptedSource{adapter: providerStub}
 	runner, err := agent.NewWithSelectionAndActivity(source, provider.Selection{Provider: "tokenrouter", Model: "qwen-2.5-coder"}, conversation, m, approvalReader, registry, approval.DefaultPolicy(), nil, nil, repository.ModeOff, "", m)
