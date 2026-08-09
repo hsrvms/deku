@@ -76,7 +76,7 @@ func TestTurnDiffAutoOpensOnFirstChange(t *testing.T) {
 		"main.go": "diff --git a/main.go b/main.go\n--- a/main.go\n+++ b/main.go\n@@ -1,2 +1,3 @@\n package main\n-old\n+new\n",
 	}}
 	m := newTestModel(io.Discard)
-	m.Update(tea.WindowSizeMsg{Width: 160, Height: 24})
+	m.Update(tea.WindowSizeMsg{Width: 160, Height: 48})
 	m.diff = diff.run
 	cmd := startTurn(m)
 	_ = cmd
@@ -102,17 +102,26 @@ func TestTurnDiffAutoOpensOnFirstChange(t *testing.T) {
 		t.Errorf("diff runner calls = %#v, want [[main.go]]", got)
 	}
 
-	// The pane shares the window: status bar and input line stay at the
-	// bottom, the diff renders as the right-hand column.
+	// The pane splits the main area vertically: the diff renders below the
+	// Transcript, and the status bar and input line stay at the bottom.
 	lines := strings.Split(view, "\n")
-	if len(lines) != 24 {
-		t.Errorf("View height with the pane open = %d lines, want 24", len(lines))
+	if len(lines) != 48 {
+		t.Errorf("View height with the pane open = %d lines, want 48", len(lines))
 	}
-	if !strings.Contains(lines[22], "tokenrouter/qwen-2.5-coder") {
-		t.Errorf("status bar line = %q, want the Selection", lines[22])
+	if !strings.Contains(lines[len(lines)-2], "tokenrouter/qwen-2.5-coder") {
+		t.Errorf("status bar line = %q, want the Selection", lines[len(lines)-2])
 	}
-	if !strings.HasPrefix(lines[23], "> ") {
-		t.Errorf("input line = %q, want the prompt", lines[23])
+	if !strings.HasPrefix(lines[len(lines)-1], "> ") {
+		t.Errorf("input line = %q, want the prompt", lines[len(lines)-1])
+	}
+	diffLine := 0
+	for i, line := range lines {
+		if strings.HasPrefix(line, "Turn Diff") {
+			diffLine = i
+		}
+	}
+	if diffLine == 0 || diffLine >= len(lines)-2 {
+		t.Errorf("the Turn Diff pane must render below the Transcript and above the status bar, header at line %d of %d", diffLine, len(lines))
 	}
 }
 
@@ -122,7 +131,7 @@ func TestTurnDiffExtendsOnSecondEditToSameFile(t *testing.T) {
 		"notes.txt": "diff --git a/notes.txt b/notes.txt\nnew file mode 100644\n--- /dev/null\n+++ b/notes.txt\n@@ -0,0 +1 @@\n+hello\n",
 	}}
 	m := newTestModel(io.Discard)
-	m.Update(tea.WindowSizeMsg{Width: 160, Height: 24})
+	m.Update(tea.WindowSizeMsg{Width: 160, Height: 48})
 	m.diff = diff.run
 	cmd := startTurn(m)
 	_ = cmd
@@ -162,7 +171,7 @@ func TestTurnDiffExtendsOnSecondEditToSameFile(t *testing.T) {
 
 func TestTurnDiffPerFileCap(t *testing.T) {
 	m := newTestModel(io.Discard)
-	m.Update(tea.WindowSizeMsg{Width: 160, Height: 1200})
+	m.Update(tea.WindowSizeMsg{Width: 160, Height: 5000})
 	diff := &scriptedDiff{diffs: map[string]string{"big.go": diffLinesN("big.go", "line", 250)}}
 	m.diff = diff.run
 	cmd := startTurn(m)
@@ -184,7 +193,7 @@ func TestTurnDiffPerFileCap(t *testing.T) {
 
 func TestTurnDiffTotalCap(t *testing.T) {
 	m := newTestModel(io.Discard)
-	m.Update(tea.WindowSizeMsg{Width: 160, Height: 1200})
+	m.Update(tea.WindowSizeMsg{Width: 160, Height: 5000})
 	diffs := make(map[string]string)
 	for _, prefix := range []string{"a", "b", "c", "d", "e", "f", "g"} {
 		diffs[prefix+".go"] = diffLinesN(prefix+".go", prefix+"line", 150)
@@ -222,7 +231,7 @@ func TestTurnDiffToggle(t *testing.T) {
 		"main.go": "diff --git a/main.go b/main.go\n--- a/main.go\n+++ b/main.go\n@@ -1 +1,2 @@\n-old\n+new\n",
 	}}
 	m := newTestModel(io.Discard)
-	m.Update(tea.WindowSizeMsg{Width: 160, Height: 24})
+	m.Update(tea.WindowSizeMsg{Width: 160, Height: 48})
 	m.diff = diff.run
 	cmd := startTurn(m)
 	_ = cmd
@@ -259,7 +268,7 @@ func TestTurnDiffPersistsAcrossTurnBoundary(t *testing.T) {
 		"notes.txt": "diff --git a/notes.txt b/notes.txt\n--- a/notes.txt\n+++ b/notes.txt\n@@ -1 +1,2 @@\n-orig\n+hello\n",
 	}}
 	m := newTestModel(io.Discard)
-	m.Update(tea.WindowSizeMsg{Width: 160, Height: 24})
+	m.Update(tea.WindowSizeMsg{Width: 160, Height: 48})
 	m.diff = diff.run
 	m.SetRunner(&stubRunner{})
 
@@ -333,12 +342,8 @@ func TestTurnDiffErrorNote(t *testing.T) {
 	_ = cmd
 
 	m.Change(activity.Change{Tool: "edit", Path: "main.go"})
-	view := stripANSI(m.View())
-	// The note wraps at the pane width, so it renders across two lines.
-	for _, want := range []string{"diff unavailable: not a", "Git repository"} {
-		if !strings.Contains(view, want) {
-			t.Errorf("the pane must report the diff failure, missing %q, got %q", want, view)
-		}
+	if view := stripANSI(m.View()); !strings.Contains(view, "diff unavailable: not a Git repository") {
+		t.Errorf("the pane must report the diff failure, got %q", view)
 	}
 }
 
@@ -432,7 +437,7 @@ func TestRealAgentTurnRendersRealGitDiffEndToEnd(t *testing.T) {
 	}
 	approvalReader, approvalWriter := io.Pipe()
 	m := New("tokenrouter", "qwen-2.5-coder", approvalWriter)
-	m.Update(tea.WindowSizeMsg{Width: 160, Height: 24})
+	m.Update(tea.WindowSizeMsg{Width: 160, Height: 48})
 	repo, err := repository.New(root)
 	if err != nil {
 		t.Fatalf("repository.New() error = %v", err)
@@ -476,7 +481,7 @@ func TestRealAgentTurnRendersRealGitDiffEndToEnd(t *testing.T) {
 func TestTurnDiffPaneWindowShowsTopOfTallDiff(t *testing.T) {
 	diff := &scriptedDiff{diffs: map[string]string{"big.go": diffLinesN("big.go", "line", 50)}}
 	m := newTestModel(io.Discard)
-	m.Update(tea.WindowSizeMsg{Width: 160, Height: 12}) // pane window is 10 lines
+	m.Update(tea.WindowSizeMsg{Width: 160, Height: 24}) // pane window is 7 lines
 	m.diff = diff.run
 	cmd := startTurn(m)
 	_ = cmd
@@ -484,10 +489,10 @@ func TestTurnDiffPaneWindowShowsTopOfTallDiff(t *testing.T) {
 	m.Change(activity.Change{Tool: "edit", Path: "big.go"})
 	view := stripANSI(m.View())
 	// The pane window shows the top of the diff: the header, the rule, and
-	// the first 8 diff lines; the frame never grows past the terminal.
+	// the first 5 diff lines; the frame never grows past the terminal.
 	lines := strings.Split(view, "\n")
-	if len(lines) != 12 {
-		t.Errorf("View height = %d lines, want 12 (pane window + status + input)", len(lines))
+	if len(lines) != 24 {
+		t.Errorf("View height = %d lines, want 24 (pane window + status + input)", len(lines))
 	}
 	if !strings.Contains(view, "+line 001") {
 		t.Errorf("the pane must show the top of the diff, got %q", view)

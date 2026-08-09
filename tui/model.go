@@ -231,8 +231,8 @@ func (m *Model) Changes() []activity.Change {
 func (m *Model) ScrollPercent() float64 {
 	m.mu.Lock()
 	vp := m.viewport
+	vp.Height = m.transcriptHeightLocked()
 	m.mu.Unlock()
-	vp.Height = m.paneHeight()
 	return vp.ScrollPercent()
 }
 
@@ -296,7 +296,6 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.width = msg.Width
 		m.height = msg.Height
 		m.mu.Lock()
-		m.viewport.Height = m.paneHeight()
 		m.refreshTranscriptLocked()
 		m.mu.Unlock()
 	case tea.KeyMsg:
@@ -451,28 +450,37 @@ func (m *Model) refreshDiff() {
 	m.mu.Unlock()
 }
 
-// refreshTranscriptLocked re-lays the Transcript at the current pane width.
+// refreshTranscriptLocked re-lays the Transcript at the current pane size.
 // Callers hold m.mu.
 func (m *Model) refreshTranscriptLocked() {
-	m.viewport.Width = m.transcriptWidthLocked()
+	m.viewport.Width = m.paneWidthLocked()
+	m.viewport.Height = m.transcriptHeightLocked()
 	m.viewport.SetContent(renderTranscript(m.transcript, m.viewport.Width))
 }
 
-// transcriptWidthLocked is the Transcript pane's width: the window width minus
-// the Turn Diff pane's share while it is open. Callers hold m.mu.
-func (m *Model) transcriptWidthLocked() int {
+// paneWidthLocked is the Transcript pane's width: the full window width — the
+// Turn Diff pane splits the main area vertically, never horizontally, so the
+// Transcript's column width never changes. Callers hold m.mu.
+func (m *Model) paneWidthLocked() int {
 	width, _ := m.size()
-	if m.diffOpen {
-		width -= m.diffWidthLocked()
-	}
 	return width
 }
 
-// diffWidthLocked is the Turn Diff pane's width: one third of the window.
+// transcriptHeightLocked is the Transcript pane's height: the main area minus
+// the Turn Diff pane's share while it is open. Callers hold m.mu.
+func (m *Model) transcriptHeightLocked() int {
+	height := m.paneHeight()
+	if m.diffOpen {
+		height -= m.diffHeightLocked()
+	}
+	return height
+}
+
+// diffHeightLocked is the Turn Diff pane's height: one third of the main
+// area, which the pane and the Transcript split when the pane is open.
 // Callers hold m.mu.
-func (m *Model) diffWidthLocked() int {
-	width, _ := m.size()
-	return max(1, width/diffPaneDivisor)
+func (m *Model) diffHeightLocked() int {
+	return max(1, m.paneHeight()/diffPaneDivisor)
 }
 
 // scrollUp moves the Transcript view toward the top and leaves the pinned
@@ -495,23 +503,26 @@ func (m *Model) scrollDown(lines int) {
 }
 
 // View implements tea.Model: the Transcript pane, the Turn Diff pane (a
-// right-hand column that auto-opens on the first Change of a Turn and is
-// Ctrl+T toggleable), the status bar, and the input line.
+// bottom panel that splits the main area with the Transcript, auto-opens on
+// the first Change of a Turn, and is Ctrl+T toggleable), the status bar, and
+// the input line. The split never moves the status bar or the input line.
 func (m *Model) View() string {
 	width, _ := m.size()
 	m.refreshDiff()
 	m.mu.Lock()
 	vp := m.viewport
 	diffOpen := m.diffOpen
-	transcriptWidth := width
+	transcriptHeight := m.paneHeight()
+	diffHeight := 0
 	var diffPane string
 	if diffOpen {
-		transcriptWidth = width - m.diffWidthLocked()
-		diffPane = renderTurnDiff(m.diffCache, m.diffOrder, m.diffWidthLocked(), m.diffErr)
+		transcriptHeight = m.transcriptHeightLocked()
+		diffHeight = m.diffHeightLocked()
+		diffPane = renderTurnDiff(m.diffCache, m.diffOrder, width, m.diffErr)
 	}
 	m.mu.Unlock()
-	vp.Width = transcriptWidth
-	vp.Height = m.paneHeight()
+	vp.Width = width
+	vp.Height = transcriptHeight
 	if m.follow {
 		vp.GotoBottom()
 		m.mu.Lock()
@@ -520,9 +531,8 @@ func (m *Model) View() string {
 	}
 	transcript := vp.View()
 	if diffOpen {
-		height := m.paneHeight()
-		diffPane = cutToHeight(diffPane, height)
-		transcript = lipgloss.JoinHorizontal(lipgloss.Top, padToHeight(transcript, height), padToHeight(diffPane, height))
+		diffPane = cutToHeight(diffPane, diffHeight)
+		transcript = lipgloss.JoinVertical(lipgloss.Top, padToHeight(transcript, transcriptHeight), padToHeight(diffPane, diffHeight))
 	}
 	return strings.Join([]string{
 		transcript,

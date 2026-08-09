@@ -24,14 +24,23 @@ This guide explicitly rejects the pi-style full chrome — editor panes, modal c
 ## 3. Panes
 
 ```
-┌ transcript (main) ────────────┬─ turn diff (auto-opens on first Change) ─┐
-│  streaming conversation,      │  cumulative working-tree diff per file   │
-│  scrollable                   │  for the current Turn                    │
-├───────────────────────────────┴──────────────────────────────────────────┤
-│  ● thinking · tool: read · provider/model     ← status bar               │
+┌ transcript (main) ─────────────────────────────────────────────────────┐
+│  streaming conversation, scrollable                                    │
+├────────────────────────────────────────────────────────────────────────┤
+│  turn diff (auto-opens on first Change; cumulative per-file diff of    │
+│  the Turn's Edits and Writes; Ctrl+T toggles)                          │
+├────────────────────────────────────────────────────────────────────────┤
+│  ● thinking · tool: read · provider/model     ← status bar             │
 │  > _                                                                    │
-└──────────────────────────────────────────────────────────────────────────┘
+└────────────────────────────────────────────────────────────────────────┘
 ```
+
+The Turn Diff renders as a **bottom panel** in the main area: it splits the
+main area vertically with the Transcript (the pane takes one third of the
+main area's height, the Transcript the rest) and never squeezes the status
+bar or the input line. The split is vertical, not a side-by-side column,
+because the Transcript keeps its full column width and long diff lines keep
+the full window width.
 
 1. **Transcript pane** — the conversation; streams `TextDelta` output incrementally; scrollable in normal mode and with `Ctrl+E`/`Ctrl+Y` from any mode.
 2. **Turn Diff pane** — auto-opens on the first `Change` event of a Turn; shows the *cumulative* per-file working-tree diff of the Turn's Edits and Writes (never per-edit snapshots, so a second Edit to the same file extends the first, not replaces it); Writes of new files appear as new-file entries; keeps showing the completed Turn's diff until the next Turn begins; toggleable (§5).

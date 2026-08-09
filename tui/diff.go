@@ -17,8 +17,8 @@ import (
 const (
 	diffFileCap  = 200
 	diffTotalCap = 1000
-	// diffPaneDivisor: the Turn Diff pane takes one third of the window
-	// width and the Transcript the rest, per the design guide's layout.
+	// diffPaneDivisor: the Turn Diff pane takes one third of the main area's
+	// height and the Transcript the rest, per the design guide's layout.
 	diffPaneDivisor = 3
 )
 
