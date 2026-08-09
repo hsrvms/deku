@@ -17,9 +17,6 @@ import (
 const (
 	diffFileCap  = 200
 	diffTotalCap = 1000
-	// diffPaneDivisor: the Turn Diff pane takes one third of the main area's
-	// height and the Transcript the rest, per the design guide's layout.
-	diffPaneDivisor = 3
 )
 
 // diffFunc computes the cumulative per-file working-tree diff of paths: one
@@ -66,20 +63,18 @@ type diffEntry struct {
 	fileTruncated bool
 }
 
-// renderTurnDiff lays the Turn Diff pane out at the given width: a header,
-// then each changed file's cumulative diff in Change order. A diff failure
-// (for example no Git repository) renders as a note; the pane is a display of
-// Agent work and never fails the UI. The per-file and total line caps each
-// carry a truncation note.
-func renderTurnDiff(diffs map[string]string, order []string, width int, diffErr error) string {
+// formatTurnDiff renders the Turn Diff block body for the Transcript: a
+// header, then each changed file's cumulative diff in Change order. A diff
+// failure (for example no Git repository) renders as a note; the block is a
+// display of Agent work and never fails the UI. The per-file and total line
+// caps each carry a truncation note.
+func formatTurnDiff(diffs map[string]string, order []string, diffErr error) string {
 	var b strings.Builder
-	b.WriteString(lipgloss.NewStyle().Foreground(palette.rule).Render("Turn Diff"))
-	b.WriteByte('\n')
-	b.WriteString(lipgloss.NewStyle().Foreground(palette.rule).Render(strings.Repeat("─", width)))
+	b.WriteString(lipgloss.NewStyle().Foreground(palette.rule).Render("Turn Diff:"))
 	b.WriteByte('\n')
 	if diffErr != nil {
 		b.WriteString(lipgloss.NewStyle().Foreground(palette.rule).Render("diff unavailable: " + diffErr.Error()))
-		return strings.TrimSuffix(lipgloss.NewStyle().Width(width).Render(b.String()), "\n")
+		return b.String()
 	}
 
 	remaining := diffTotalCap
@@ -111,7 +106,7 @@ func renderTurnDiff(diffs map[string]string, order []string, width int, diffErr 
 		b.WriteString(truncationNote(fmt.Sprintf("diff truncated at %d lines", diffTotalCap)))
 		b.WriteByte('\n')
 	}
-	return lipgloss.NewStyle().Width(width).Render(strings.TrimSuffix(b.String(), "\n"))
+	return strings.TrimSuffix(b.String(), "\n")
 }
 
 // diffEntries collects the changed files' diff lines in Change order, drops
@@ -161,25 +156,4 @@ func styleDiffLine(line string) string {
 // truncationNote renders a muted note that a cap cut the diff.
 func truncationNote(text string) string {
 	return lipgloss.NewStyle().Foreground(palette.rule).Render("... " + text)
-}
-
-// padToHeight pads s to exactly height lines so the Transcript and Turn Diff
-// columns join into a full-height frame.
-func padToHeight(s string, height int) string {
-	lines := strings.Count(s, "\n") + 1
-	if lines >= height {
-		return s
-	}
-	return s + strings.Repeat("\n", height-lines)
-}
-
-// cutToHeight keeps the first height lines of s: the pane's window onto its
-// capped content. The pane is top-anchored and does not scroll (no ratified
-// binding exists for it), so a diff taller than the pane shows its beginning.
-func cutToHeight(s string, height int) string {
-	lines := strings.Split(s, "\n")
-	if len(lines) <= height {
-		return s
-	}
-	return strings.Join(lines[:height], "\n")
 }

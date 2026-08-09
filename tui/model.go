@@ -9,7 +9,6 @@ import (
 
 	"github.com/charmbracelet/bubbles/viewport"
 	tea "github.com/charmbracelet/bubbletea"
-	"github.com/charmbracelet/lipgloss"
 
 	"github.com/hsrvms/deku/activity"
 	"github.com/hsrvms/deku/agent"
@@ -55,11 +54,13 @@ type Model struct {
 	viewport     viewport.Model
 	follow       bool // pin the Transcript to the newest content
 
-	// Turn Diff pane state. diff is the seam the renderer computes the
+	// Turn Diff block state. diff is the seam the renderer computes the
 	// cumulative working-tree diff through; the remaining fields track the
-	// current Turn's path set and the pane's open/rendered state.
+	// current Turn's path set and the block's visibility and Transcript
+	// entry.
 	diff          diffFunc
 	diffOpen      bool
+	diffEntryIdx  int // Transcript index of the current Turn's block, -1 before the first Change
 	turnDiffPaths map[string]bool
 	diffOrder     []string
 	diffCache     map[string]string
@@ -88,6 +89,7 @@ func New(provider, model string, approval io.Writer) *Model {
 		follow:        true,
 		repaint:       make(chan struct{}, 1),
 		diff:          gitDiff(),
+		diffEntryIdx:  -1,
 		turnDiffPaths: make(map[string]bool),
 	}
 }
@@ -175,10 +177,11 @@ func (m *Model) ActiveTool(name string) {
 }
 
 // Change implements activity.Sink: the Change records the cumulative
-// per-file working-tree path set the Turn Diff pane renders. The first Change
-// of a Turn auto-opens the pane; every Change marks the diff dirty, because
-// the working tree changed and the cumulative diff must be recomputed — a
-// second Edit to the same file extends the first (CONTEXT.md: Turn Diff).
+// per-file working-tree path set the Turn Diff block renders. The first
+// Change of a Turn auto-opens the block inside the Agent's response section
+// of the Transcript; every Change marks the diff dirty, because the working
+// tree changed and the cumulative diff must be recomputed — a second Edit to
+// the same file extends the first (CONTEXT.md: Turn Diff).
 func (m *Model) Change(c activity.Change) {
 	m.mu.Lock()
 	m.changes = append(m.changes, c)
@@ -187,8 +190,10 @@ func (m *Model) Change(c activity.Change) {
 		if _, seen := m.turnDiffPaths[c.Path]; !seen {
 			m.turnDiffPaths[c.Path] = true
 			m.diffOrder = append(m.diffOrder, c.Path)
-			if len(m.diffOrder) == 1 {
+			if m.diffEntryIdx < 0 {
+				m.diffEntryIdx = len(m.transcript)
 				m.diffOpen = true
+				m.transcript = append(m.transcript, transcriptEntry{kind: msgTurnDiff})
 				m.refreshTranscriptLocked()
 			}
 		}
@@ -231,8 +236,8 @@ func (m *Model) Changes() []activity.Change {
 func (m *Model) ScrollPercent() float64 {
 	m.mu.Lock()
 	vp := m.viewport
-	vp.Height = m.transcriptHeightLocked()
 	m.mu.Unlock()
+	vp.Height = m.paneHeight()
 	return vp.ScrollPercent()
 }
 
@@ -378,15 +383,16 @@ func (m *Model) submit() tea.Cmd {
 	}
 	m.appendEntry(msgUser, request)
 	m.mu.Lock()
-	// A new Turn starts a fresh Turn Diff: the pane closes and re-opens on
-	// the new Turn's first Change, while the completed Turn's diff persisted
-	// until exactly here.
+	// A new Turn starts a fresh Turn Diff: the block re-opens on the new
+	// Turn's first Change, while the completed Turn's block stays in the
+	// Transcript as its history.
 	m.turnDiffPaths = make(map[string]bool)
 	m.diffOrder = nil
 	m.diffCache = nil
 	m.diffErr = nil
 	m.diffDirty = true
 	m.diffOpen = false
+	m.diffEntryIdx = -1
 	m.turnActive = true
 	m.refreshTranscriptLocked()
 	m.mu.Unlock()
@@ -419,8 +425,8 @@ func (m *Model) dispatchCommand(line string) {
 	}
 }
 
-// toggleDiff opens and closes the Turn Diff pane, re-laying the Transcript at
-// the width the open pane leaves it.
+// toggleDiff hides and shows the current Turn's Turn Diff block. A completed
+// Turn's block stays in the Transcript as history either way.
 func (m *Model) toggleDiff() {
 	m.mu.Lock()
 	m.diffOpen = !m.diffOpen
@@ -429,9 +435,9 @@ func (m *Model) toggleDiff() {
 }
 
 // refreshDiff recomputes the Turn Diff when the path set changed since the
-// last render. The diff runs outside the lock so the Agent's Sink calls never
-// wait on git; a Change that arrives mid-compute marks the pane dirty again
-// and the next View recomputes.
+// last render and writes the block's content. The diff runs outside the lock
+// so the Agent's Sink calls never wait on git; a Change that arrives
+// mid-compute marks the block dirty again and the next View recomputes.
 func (m *Model) refreshDiff() {
 	m.mu.Lock()
 	if !m.diffOpen || !m.diffDirty {
@@ -447,40 +453,25 @@ func (m *Model) refreshDiff() {
 	m.mu.Lock()
 	m.diffCache = diffs
 	m.diffErr = err
+	if m.diffEntryIdx >= 0 && m.diffEntryIdx < len(m.transcript) {
+		m.transcript[m.diffEntryIdx].text = formatTurnDiff(diffs, m.diffOrder, err)
+	}
+	m.refreshTranscriptLocked()
 	m.mu.Unlock()
 }
 
-// refreshTranscriptLocked re-lays the Transcript at the current pane size.
+// refreshTranscriptLocked re-lays the Transcript at the current pane size,
+// skipping the current Turn's Turn Diff block while it is toggled off.
 // Callers hold m.mu.
 func (m *Model) refreshTranscriptLocked() {
-	m.viewport.Width = m.paneWidthLocked()
-	m.viewport.Height = m.transcriptHeightLocked()
-	m.viewport.SetContent(renderTranscript(m.transcript, m.viewport.Width))
-}
-
-// paneWidthLocked is the Transcript pane's width: the full window width — the
-// Turn Diff pane splits the main area vertically, never horizontally, so the
-// Transcript's column width never changes. Callers hold m.mu.
-func (m *Model) paneWidthLocked() int {
-	width, _ := m.size()
-	return width
-}
-
-// transcriptHeightLocked is the Transcript pane's height: the main area minus
-// the Turn Diff pane's share while it is open. Callers hold m.mu.
-func (m *Model) transcriptHeightLocked() int {
-	height := m.paneHeight()
-	if m.diffOpen {
-		height -= m.diffHeightLocked()
+	entries := m.transcript
+	if m.diffEntryIdx >= 0 && !m.diffOpen {
+		entries = append(append([]transcriptEntry(nil), m.transcript[:m.diffEntryIdx]...), m.transcript[m.diffEntryIdx+1:]...)
 	}
-	return height
-}
-
-// diffHeightLocked is the Turn Diff pane's height: one third of the main
-// area, which the pane and the Transcript split when the pane is open.
-// Callers hold m.mu.
-func (m *Model) diffHeightLocked() int {
-	return max(1, m.paneHeight()/diffPaneDivisor)
+	width, _ := m.size()
+	m.viewport.Width = width
+	m.viewport.Height = m.paneHeight()
+	m.viewport.SetContent(renderTranscript(entries, width))
 }
 
 // scrollUp moves the Transcript view toward the top and leaves the pinned
@@ -502,40 +493,25 @@ func (m *Model) scrollDown(lines int) {
 	m.mu.Unlock()
 }
 
-// View implements tea.Model: the Transcript pane, the Turn Diff pane (a
-// bottom panel that splits the main area with the Transcript, auto-opens on
-// the first Change of a Turn, and is Ctrl+T toggleable), the status bar, and
-// the input line. The split never moves the status bar or the input line.
+// View implements tea.Model: the Transcript pane — which hosts the Turn Diff
+// block inside the Agent's response section — the status bar, and the input
+// line. The layout never changes when the block appears.
 func (m *Model) View() string {
 	width, _ := m.size()
 	m.refreshDiff()
 	m.mu.Lock()
 	vp := m.viewport
-	diffOpen := m.diffOpen
-	transcriptHeight := m.paneHeight()
-	diffHeight := 0
-	var diffPane string
-	if diffOpen {
-		transcriptHeight = m.transcriptHeightLocked()
-		diffHeight = m.diffHeightLocked()
-		diffPane = renderTurnDiff(m.diffCache, m.diffOrder, width, m.diffErr)
-	}
 	m.mu.Unlock()
 	vp.Width = width
-	vp.Height = transcriptHeight
+	vp.Height = m.paneHeight()
 	if m.follow {
 		vp.GotoBottom()
 		m.mu.Lock()
 		m.viewport.YOffset = vp.YOffset
 		m.mu.Unlock()
 	}
-	transcript := vp.View()
-	if diffOpen {
-		diffPane = cutToHeight(diffPane, diffHeight)
-		transcript = lipgloss.JoinVertical(lipgloss.Top, padToHeight(transcript, transcriptHeight), padToHeight(diffPane, diffHeight))
-	}
 	return strings.Join([]string{
-		transcript,
+		vp.View(),
 		m.statusBar(),
 		m.inputLine(),
 	}, "\n")

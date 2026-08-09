@@ -76,13 +76,12 @@ func TestTurnDiffAutoOpensOnFirstChange(t *testing.T) {
 		"main.go": "diff --git a/main.go b/main.go\n--- a/main.go\n+++ b/main.go\n@@ -1,2 +1,3 @@\n package main\n-old\n+new\n",
 	}}
 	m := newTestModel(io.Discard)
-	m.Update(tea.WindowSizeMsg{Width: 160, Height: 48})
 	m.diff = diff.run
 	cmd := startTurn(m)
 	_ = cmd
 
-	if view := stripANSI(m.View()); strings.Contains(view, "Turn Diff") {
-		t.Fatal("the pane must stay closed until the first Change of the Turn")
+	if view := stripANSI(m.View()); strings.Contains(view, "Turn Diff:") {
+		t.Fatal("the block must stay out of the Transcript until the first Change of the Turn")
 	}
 	if m.diffOpen {
 		t.Fatal("diffOpen must be false before the first Change")
@@ -91,37 +90,38 @@ func TestTurnDiffAutoOpensOnFirstChange(t *testing.T) {
 	m.Change(activity.Change{Tool: "edit", Path: "main.go"})
 	view := stripANSI(m.View())
 	if !m.diffOpen {
-		t.Error("the pane must auto-open on the first Change of the Turn")
+		t.Error("the block must auto-open on the first Change of the Turn")
 	}
-	for _, want := range []string{"Turn Diff", "-old", "+new", "diff --git a/main.go b/main.go"} {
+	for _, want := range []string{"Turn Diff:", "-old", "+new", "diff --git a/main.go b/main.go"} {
 		if !strings.Contains(view, want) {
-			t.Errorf("Turn Diff pane missing %q, got %q", want, view)
+			t.Errorf("Turn Diff block missing %q, got %q", want, view)
 		}
 	}
 	if got := diff.calls; !reflect.DeepEqual(got, [][]string{{"main.go"}}) {
 		t.Errorf("diff runner calls = %#v, want [[main.go]]", got)
 	}
 
-	// The pane splits the main area vertically: the diff renders below the
-	// Transcript, and the status bar and input line stay at the bottom.
+	// The block lives inside the Agent's response section of the
+	// Transcript: the frame stays 24 lines, the status bar and the input
+	// line keep their fixed positions.
 	lines := strings.Split(view, "\n")
-	if len(lines) != 48 {
-		t.Errorf("View height with the pane open = %d lines, want 48", len(lines))
+	if len(lines) != 24 {
+		t.Errorf("View height with the block open = %d lines, want 24", len(lines))
 	}
-	if !strings.Contains(lines[len(lines)-2], "tokenrouter/qwen-2.5-coder") {
-		t.Errorf("status bar line = %q, want the Selection", lines[len(lines)-2])
+	if !strings.Contains(lines[22], "tokenrouter/qwen-2.5-coder") {
+		t.Errorf("status bar line = %q, want the Selection", lines[22])
 	}
-	if !strings.HasPrefix(lines[len(lines)-1], "> ") {
-		t.Errorf("input line = %q, want the prompt", lines[len(lines)-1])
+	if !strings.HasPrefix(lines[23], "> ") {
+		t.Errorf("input line = %q, want the prompt", lines[23])
 	}
 	diffLine := 0
 	for i, line := range lines {
-		if strings.HasPrefix(line, "Turn Diff") {
+		if strings.HasPrefix(line, "Turn Diff:") {
 			diffLine = i
 		}
 	}
-	if diffLine == 0 || diffLine >= len(lines)-2 {
-		t.Errorf("the Turn Diff pane must render below the Transcript and above the status bar, header at line %d of %d", diffLine, len(lines))
+	if diffLine == 0 || diffLine >= 22 {
+		t.Errorf("the Turn Diff block must render inside the Transcript, header at line %d of 22", diffLine)
 	}
 }
 
@@ -131,7 +131,6 @@ func TestTurnDiffExtendsOnSecondEditToSameFile(t *testing.T) {
 		"notes.txt": "diff --git a/notes.txt b/notes.txt\nnew file mode 100644\n--- /dev/null\n+++ b/notes.txt\n@@ -0,0 +1 @@\n+hello\n",
 	}}
 	m := newTestModel(io.Discard)
-	m.Update(tea.WindowSizeMsg{Width: 160, Height: 48})
 	m.diff = diff.run
 	cmd := startTurn(m)
 	_ = cmd
@@ -142,7 +141,7 @@ func TestTurnDiffExtendsOnSecondEditToSameFile(t *testing.T) {
 	}
 
 	// The working tree grew: the second Edit to the same file must extend
-	// the first in the pane, not replace it or duplicate the file entry.
+	// the first in the block, not replace it or duplicate the file entry.
 	diff.diffs["main.go"] = "diff --git a/main.go b/main.go\n--- a/main.go\n+++ b/main.go\n@@ -1 +1,3 @@\n-old\n+new\n+more\n"
 	m.Change(activity.Change{Tool: "edit", Path: "main.go"})
 	view := stripANSI(m.View())
@@ -171,7 +170,7 @@ func TestTurnDiffExtendsOnSecondEditToSameFile(t *testing.T) {
 
 func TestTurnDiffPerFileCap(t *testing.T) {
 	m := newTestModel(io.Discard)
-	m.Update(tea.WindowSizeMsg{Width: 160, Height: 5000})
+	m.Update(tea.WindowSizeMsg{Width: 80, Height: 1200})
 	diff := &scriptedDiff{diffs: map[string]string{"big.go": diffLinesN("big.go", "line", 250)}}
 	m.diff = diff.run
 	cmd := startTurn(m)
@@ -193,7 +192,7 @@ func TestTurnDiffPerFileCap(t *testing.T) {
 
 func TestTurnDiffTotalCap(t *testing.T) {
 	m := newTestModel(io.Discard)
-	m.Update(tea.WindowSizeMsg{Width: 160, Height: 5000})
+	m.Update(tea.WindowSizeMsg{Width: 80, Height: 1200})
 	diffs := make(map[string]string)
 	for _, prefix := range []string{"a", "b", "c", "d", "e", "f", "g"} {
 		diffs[prefix+".go"] = diffLinesN(prefix+".go", prefix+"line", 150)
@@ -231,31 +230,30 @@ func TestTurnDiffToggle(t *testing.T) {
 		"main.go": "diff --git a/main.go b/main.go\n--- a/main.go\n+++ b/main.go\n@@ -1 +1,2 @@\n-old\n+new\n",
 	}}
 	m := newTestModel(io.Discard)
-	m.Update(tea.WindowSizeMsg{Width: 160, Height: 48})
 	m.diff = diff.run
 	cmd := startTurn(m)
 	_ = cmd
 
 	m.Change(activity.Change{Tool: "edit", Path: "main.go"})
-	if view := m.View(); !strings.Contains(stripANSI(view), "Turn Diff") {
-		t.Fatalf("the pane must be open after the first Change, got %q", view)
+	if view := stripANSI(m.View()); !strings.Contains(view, "Turn Diff:") {
+		t.Fatalf("the block must be open after the first Change, got %q", view)
 	}
 
 	m.Update(ctrlT())
 	if m.diffOpen {
-		t.Error("Ctrl+T must close the pane")
+		t.Error("Ctrl+T must hide the block")
 	}
-	if view := stripANSI(m.View()); strings.Contains(view, "Turn Diff") {
-		t.Errorf("closed pane must not render, got %q", view)
+	if view := stripANSI(m.View()); strings.Contains(view, "Turn Diff:") {
+		t.Errorf("the hidden block must not render, got %q", view)
 	}
 
 	m.Update(ctrlT())
 	if !m.diffOpen {
-		t.Error("Ctrl+T must reopen the pane")
+		t.Error("Ctrl+T must show the block again")
 	}
 	view := stripANSI(m.View())
-	if !strings.Contains(view, "Turn Diff") || !strings.Contains(view, "+new") {
-		t.Errorf("reopened pane must show the cached diff, got %q", view)
+	if !strings.Contains(view, "Turn Diff:") || !strings.Contains(view, "+new") {
+		t.Errorf("the reopened block must show the cached diff, got %q", view)
 	}
 	if got := diff.calls; !reflect.DeepEqual(got, [][]string{{"main.go"}}) {
 		t.Errorf("reopening must not recompute the diff, calls = %#v", got)
@@ -268,46 +266,46 @@ func TestTurnDiffPersistsAcrossTurnBoundary(t *testing.T) {
 		"notes.txt": "diff --git a/notes.txt b/notes.txt\n--- a/notes.txt\n+++ b/notes.txt\n@@ -1 +1,2 @@\n-orig\n+hello\n",
 	}}
 	m := newTestModel(io.Discard)
-	m.Update(tea.WindowSizeMsg{Width: 160, Height: 48})
 	m.diff = diff.run
 	m.SetRunner(&stubRunner{})
 
 	cmd := startTurn(m)
 	m.Change(activity.Change{Tool: "edit", Path: "main.go"})
 	if view := stripANSI(m.View()); !strings.Contains(view, "+new") {
-		t.Fatalf("the pane must open during the Turn, got %q", view)
+		t.Fatalf("the block must open during the Turn, got %q", view)
 	}
 
-	// A completed Turn leaves the pane showing its diff.
+	// A completed Turn leaves its block in the Transcript.
 	completeTurn(t, m, cmd)
 	if m.turnActive {
 		t.Fatal("Turn must finish when the result arrives")
 	}
-	if view := stripANSI(m.View()); !strings.Contains(view, "Turn Diff") || !strings.Contains(view, "+new") {
-		t.Errorf("the pane must persist after the Turn completes, got %q", view)
+	if view := stripANSI(m.View()); !strings.Contains(view, "Turn Diff:") || !strings.Contains(view, "+new") {
+		t.Errorf("the block must persist after the Turn completes, got %q", view)
 	}
 
-	// The next Turn starts a fresh pane: closed, with an empty path set.
+	// The next Turn starts a fresh diff: no block of its own yet, while the
+	// completed Turn's block stays in the Transcript as its history.
 	typeText(m, "again")
 	_, cmd = m.Update(enterKey())
 	if cmd == nil {
 		t.Fatal("the second request must start a Turn")
 	}
 	if m.diffOpen {
-		t.Error("a new Turn must close the completed Turn's pane")
+		t.Error("a new Turn must start with the block hidden")
 	}
-	if view := stripANSI(m.View()); strings.Contains(view, "Turn Diff") {
-		t.Errorf("the pane must not render before the new Turn's first Change, got %q", view)
+	if view := stripANSI(m.View()); !strings.Contains(view, "Turn Diff:") {
+		t.Errorf("the completed Turn's block must remain in the Transcript, got %q", view)
 	}
 
-	// The new Turn's first Change re-opens the pane with only its own paths.
+	// The new Turn's first Change adds its own block with only its paths.
 	m.Change(activity.Change{Tool: "edit", Path: "notes.txt"})
 	view := stripANSI(m.View())
 	if !strings.Contains(view, "+hello") {
-		t.Errorf("the new Turn's pane must render its own diff, got %q", view)
+		t.Errorf("the new Turn's block must render its own diff, got %q", view)
 	}
-	if strings.Contains(view, "-old") {
-		t.Errorf("the previous Turn's diff must not leak into the new Turn, got %q", view)
+	if got := strings.Count(view, "Turn Diff:"); got != 2 {
+		t.Errorf("Turn Diff blocks = %d, want 2 (one per Turn)", got)
 	}
 	want := [][]string{{"main.go"}, {"notes.txt"}}
 	if got := diff.calls; !reflect.DeepEqual(got, want) {
@@ -317,15 +315,14 @@ func TestTurnDiffPersistsAcrossTurnBoundary(t *testing.T) {
 
 func TestTurnDiffDoesNotOpenOutsideATurn(t *testing.T) {
 	m := newTestModel(io.Discard)
-	m.Update(tea.WindowSizeMsg{Width: 160, Height: 24})
 	m.diff = (&scriptedDiff{}).run
 	m.Change(activity.Change{Tool: "edit", Path: "main.go"})
 
 	if m.diffOpen {
-		t.Error("a Change outside a Turn must not open the pane")
+		t.Error("a Change outside a Turn must not open the block")
 	}
-	if view := stripANSI(m.View()); strings.Contains(view, "Turn Diff") {
-		t.Errorf("the pane must not render outside a Turn, got %q", view)
+	if view := stripANSI(m.View()); strings.Contains(view, "Turn Diff:") {
+		t.Errorf("the block must not render outside a Turn, got %q", view)
 	}
 	if got := m.Changes(); len(got) != 1 || got[0].Path != "main.go" {
 		t.Errorf("Changes() = %#v, want the recorded Change", got)
@@ -334,7 +331,6 @@ func TestTurnDiffDoesNotOpenOutsideATurn(t *testing.T) {
 
 func TestTurnDiffErrorNote(t *testing.T) {
 	m := newTestModel(io.Discard)
-	m.Update(tea.WindowSizeMsg{Width: 160, Height: 24})
 	m.diff = func([]string) (map[string]string, error) {
 		return nil, errors.New("not a Git repository")
 	}
@@ -343,7 +339,7 @@ func TestTurnDiffErrorNote(t *testing.T) {
 
 	m.Change(activity.Change{Tool: "edit", Path: "main.go"})
 	if view := stripANSI(m.View()); !strings.Contains(view, "diff unavailable: not a Git repository") {
-		t.Errorf("the pane must report the diff failure, got %q", view)
+		t.Errorf("the block must report the diff failure, got %q", view)
 	}
 }
 
@@ -411,7 +407,7 @@ func commitGitFile(t *testing.T, dir, path, content string) {
 // TestRealAgentTurnRendersRealGitDiffEndToEnd runs a real Agent through the
 // shell in a real Git repository: an approved Write must auto-open the Turn
 // Diff pane and render the new file as a full-content addition computed from
-// the working tree with git — the whole Agent → Change → git diff → pane path
+// the working tree with git — the whole Agent → Change → git diff → block path
 // a user drives.
 func TestRealAgentTurnRendersRealGitDiffEndToEnd(t *testing.T) {
 	root := initGitRepo(t)
@@ -437,7 +433,6 @@ func TestRealAgentTurnRendersRealGitDiffEndToEnd(t *testing.T) {
 	}
 	approvalReader, approvalWriter := io.Pipe()
 	m := New("tokenrouter", "qwen-2.5-coder", approvalWriter)
-	m.Update(tea.WindowSizeMsg{Width: 160, Height: 48})
 	repo, err := repository.New(root)
 	if err != nil {
 		t.Fatalf("repository.New() error = %v", err)
@@ -475,29 +470,5 @@ func TestRealAgentTurnRendersRealGitDiffEndToEnd(t *testing.T) {
 	}
 	if strings.Contains(view, "tracked.txt") {
 		t.Errorf("unchanged tracked files must not appear in the diff, got %q", view)
-	}
-}
-
-func TestTurnDiffPaneWindowShowsTopOfTallDiff(t *testing.T) {
-	diff := &scriptedDiff{diffs: map[string]string{"big.go": diffLinesN("big.go", "line", 50)}}
-	m := newTestModel(io.Discard)
-	m.Update(tea.WindowSizeMsg{Width: 160, Height: 24}) // pane window is 7 lines
-	m.diff = diff.run
-	cmd := startTurn(m)
-	_ = cmd
-
-	m.Change(activity.Change{Tool: "edit", Path: "big.go"})
-	view := stripANSI(m.View())
-	// The pane window shows the top of the diff: the header, the rule, and
-	// the first 5 diff lines; the frame never grows past the terminal.
-	lines := strings.Split(view, "\n")
-	if len(lines) != 24 {
-		t.Errorf("View height = %d lines, want 24 (pane window + status + input)", len(lines))
-	}
-	if !strings.Contains(view, "+line 001") {
-		t.Errorf("the pane must show the top of the diff, got %q", view)
-	}
-	if strings.Contains(view, "+line 050") {
-		t.Errorf("the pane must not show lines below its window, got %q", view)
 	}
 }

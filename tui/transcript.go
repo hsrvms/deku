@@ -20,6 +20,7 @@ const (
 	msgUser                             // a user request, right-aligned
 	msgToolOutput                       // a Tool Output block
 	msgCommandReport                    // a Command Report block
+	msgTurnDiff                         // the Turn's cumulative diff block
 )
 
 // transcriptEntry is one structured message in the Transcript pane. text
@@ -68,7 +69,7 @@ func renderTranscript(entries []transcriptEntry, width int) string {
 			writeText(lipgloss.NewStyle().Foreground(palette.user).Width(width).Align(lipgloss.Right).Render(e.text))
 			b.WriteByte('\n')
 			atLineStart, lineIsRule = true, false
-		case msgToolOutput, msgCommandReport:
+		case msgToolOutput, msgCommandReport, msgTurnDiff:
 			emitSeparator()
 			writeText(e.text)
 			emitSeparator()
@@ -88,7 +89,8 @@ func renderTranscript(entries []transcriptEntry, width int) string {
 func responseStart(entries []transcriptEntry, i int) bool {
 	return i > 0 && (entries[i-1].kind == msgUser ||
 		entries[i-1].kind == msgToolOutput ||
-		entries[i-1].kind == msgCommandReport)
+		entries[i-1].kind == msgCommandReport ||
+		entries[i-1].kind == msgTurnDiff)
 }
 
 // separator is a full-width section separator marking an exchange boundary
