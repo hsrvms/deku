@@ -65,18 +65,30 @@ A function the Agent can invoke on behalf of the model. Every tool has:
 
 Tools are the only way the model can affect the world outside its context window. Tools are not the model's subroutines — they are capabilities the Agent grants to the model.
 
-**Built-in Tools** ship with Deku. **Extension Tools** are contributed by Extensions and follow the same interface.
+**Built-in Tools** ship with Deku. **Extension Tools** are contributed by Extensions — either External Tools (a declared command) or MCP Tools (bridged from an MCP server) — and follow the same interface.
 
 ---
 
 ## Extension
 
-A packaged set of tools and a system prompt fragment that extends the Agent's capabilities. Each extension lives in a directory under `~/.deku/extensions/<name>/` and contains:
+A packaged set of Tools and a system prompt fragment that extends the Agent's capabilities. Each extension lives in a directory under `~/.deku/extensions/<name>/` and contains:
 
-- `manifest.yaml` — name, version, description, tool list, dependencies
-- `SYSTEM.md` — appended to the system prompt when the extension is enabled; teaches the model when and how to use the extension's tools
+- `manifest.json` — name, version, description, dependencies, and the declaration of its Tools: External Tools with their commands, argument schemas, and Approval tiers, and MCP servers with their commands and optional Tool allowlists
+- `SYSTEM.md` — appended to the system prompt when the extension is enabled; teaches the model when and how to use the extension's Tools
 
-Extensions are **discovered** by scanning the filesystem and **enabled** by listing them in `config.yaml`. An installed but unlisted extension is inert.
+Extensions are **discovered** by scanning the filesystem and **enabled** by listing them in the Deku Home settings module (`settings.json`). An installed but unlisted extension is inert.
+
+---
+
+## External Tool
+
+An Extension Tool whose execution is a command declared in the extension's manifest. When the Agent executes an External Tool, it runs that command in a fresh process and returns the command's output as the Tool Result; an External Tool therefore has no state between calls. The manifest declares the Tool's Approval tier; an undeclared tier defaults to Write, so an unvetted External Tool prompts before every execution.
+
+---
+
+## MCP Tool
+
+An Extension Tool whose execution is delegated to a Tool exposed by an MCP server over stdio, as declared in the extension's manifest. The server supplies the Tool definitions; the manifest may restrict which of the server's Tools are bridged — a server that grows an unapproved Tool stays inert — and may declare their Approval tiers, which default to Write when undeclared.
 
 ---
 
@@ -88,7 +100,7 @@ A wire-format translator that converts the Agent's request and the Model's respo
 Chat(ctx, model, system, messages, tools) → stream of events
 ```
 
-Deku's supported Adapter families are **OpenAI-compatible** and (planned) **Anthropic Messages**. The Agent loop is adapter-agnostic — it depends only on the interface, never on a specific wire protocol. An Adapter is constructed from a Provider's configuration; it is not itself the Provider.
+Deku's supported Adapter families are **OpenAI-compatible** and **Anthropic Messages**. The Agent loop is adapter-agnostic — it depends only on the interface, never on a specific wire protocol. An Adapter is constructed from a Provider's configuration; it is not itself the Provider.
 
 ---
 
@@ -114,7 +126,13 @@ The set of Models a Provider exposes, declared per Provider. The Registry is wha
 
 ## Selection
 
-The choice of which Provider and Model the Agent uses for a Turn. Selection has a default (`defaultProvider` and `defaultModel`) and a per-Session override set by the `/model` command. The override applies to subsequent Turns and is restored when the Session resumes; the default applies otherwise.
+The choice of which Provider and Model the Agent uses for a Turn. Selection has a default (`defaultProvider` and `defaultModel`) and a per-Session override set by the `/model` Command. The override applies to subsequent Turns and is restored when the Session resumes; the default applies otherwise.
+
+---
+
+## Palette
+
+The interactive Model selection surface of the terminal UI, opened by the model palette shortcut (`Ctrl+P`). Choosing a Model in the Palette sets the per-Session Selection override — the same effect as the `/model` command, in keyboard-driven form.
 
 ---
 
@@ -136,9 +154,27 @@ Each tool declares its tier. The user can override per-tool or per-tier in confi
 
 ---
 
+## Command
+
+User input beginning with `/` that invokes a named behavior instead of a normal chat Turn. Commands either act directly on Deku state — the `/model` Command changes Selection — or run the Agent with a fixed purpose (a Purpose Command). A Command is not a Command Report: a Command is user input; a Command Report is the description the user approves when a gated Tool Call is about to run.
+
+---
+
+## Purpose Command
+
+A Command that runs the Agent as a Turn with a fixed purpose prompt and a purpose-appropriate Tool set. `review`, `explain`, and `commit` are the v1 examples. A Purpose Command begins a Turn and uses the normal Agent machinery — Steps, Approval, Transcript, Validation — with its Tool set scoped by its purpose, so a review does not Edit. The `commit` Purpose Command drives the creation of an Agent Commit or a Checkpoint; it is not itself the Git commit, which is the Agent Commit.
+
+---
+
+## Skill
+
+A named instruction file that teaches the Agent how to perform a recurring task. A Skill is a markdown file with a JSON front matter block — the name and description — and a markdown body, living in `~/.deku/skills/<name>/` or a trusted project's `.deku/skills/`. Skills carry instructions only, never Tools. The Agent matches the current request against a catalog of Skill names and descriptions carried in the prompt and reads the Skill's body when it is relevant; the catalog is bounded by a token budget and truncated with a note when it exceeds it. The user may also invoke a Skill explicitly with the `/skill:<name>` Command. A project Skill of the same name replaces the global Skill. A Skill is not a Purpose Command: a Skill is user-authored content the Agent decides to use, while a Purpose Command is a product-defined experience the user invokes.
+
+---
+
 ## Command Report
 
-The user-facing description of what a gated Tool Call will do, shown at the point of Approval. A Command Report states the concrete action — the exact command, the specific Edit, or the Write to a named path — rather than just the Tool's name and tier, so the user approves an action, not a label. Because Approval gates on the Report, the user sees what will execute before it runs.
+The user-facing description of what a gated Tool Call will do, shown at the point of Approval. A Command Report states the concrete action — the exact command, the specific Edit, or the Write to a named path — rather than just the Tool's name and tier, so the user approves an action, not a label. Because Approval gates on the Report, the user sees what will execute before it runs. A Command Report is not a Command: a Command is user input that invokes a behavior; a Command Report is the description shown at Approval.
 
 ---
 
@@ -156,6 +192,8 @@ The maximum number of tokens the model can process in a single request. The Agen
 A compact structural representation of the codebase, injected into the system prompt on every turn. The map shows file paths and symbol signatures (functions, types, methods) but not implementations. It gives the model orientation — "what exists and where" — without consuming the tokens that full file contents would require.
 
 The repository map is produced automatically by the framework for each Step. The model does not invoke it as a tool. It is always present. The model still uses `read` to see actual file contents before editing.
+
+The map is bounded by a token budget. When the repository exceeds the budget, entries are ranked for relevance to the current request and the lowest-ranked entries are dropped with a truncation note; ranking is stable within a Turn because the request is. Ranked truncation adapts the map to the task at hand without making it authoritative.
 
 The map is not a constraint — the model can always explore files not shown in the map.
 

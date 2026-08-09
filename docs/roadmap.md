@@ -12,13 +12,14 @@ Accepted work for versioned CLI distribution is specified in [Release and CD pub
 
 ## v1 — Repository intelligence and extension delivery
 
-Candidate scope, pending its own specification:
+Specified in [the v1 specification](specs/2026-08-09-v1-repository-intelligence-extension-delivery.md). Scope highlights:
 
-- MCP stdio Extension discovery, configuration, lifecycle, and tool bridging.
-- An Anthropic Provider adapter.
-- Tree-sitter Repository Maps and relevance ranking.
-- Purpose-specific command experiences such as review, explain, and commit.
-- A terminal UI: the Working Indicator and live Turn Diff rendered as panes, component conventions, keybinding policy (including the `/model` palette shortcut), and a color and accessibility baseline. Its design guide precedes implementation.
+- Extension discovery, configuration, and lifecycle: External Tools (commands declared in a JSON manifest) as the primary authoring path, and MCP stdio Tool bridging for ecosystem and stateful Tools.
+- An Anthropic Messages Adapter: the second Adapter family, authenticated by API key. The OAuth subscription flow for native subscriptions (claude, codex) remains deferred per [ADR-0008](adr/0008-provider-registry-and-selection.md).
+- Tree-sitter Repository Maps with symbol signatures, and truncation ranked for relevance to the current request within the token budget. Conversation-adaptive ranking is deferred to the later horizon.
+- Purpose Command experiences such as review, explain, and commit: Commands that run the Agent as a Turn with a fixed purpose prompt and a purpose-scoped Tool set.
+- Skills: user-authored instruction files (name, description, body) in `~/.deku/skills/` and trusted project `.deku/skills/`; the Agent loads a Skill when the request matches its description, and users can invoke one explicitly with `/skill:<name>`.
+- A terminal UI: the Working Indicator and live Turn Diff rendered as panes, component conventions, keybinding policy (including the `/model` palette shortcut), and a color and accessibility baseline. Its design guide ([guides/tui-design.md](guides/tui-design.md)) precedes implementation.
 
 The near-term display surface is deliberately limited to the Agent-to-display activity seam plus Approval transparency: a Working Indicator and Turn Diff render as the TUI in v1 rather than as a throwaway inline layer.
 
@@ -27,6 +28,7 @@ The near-term display surface is deliberately limited to the Agent-to-display ac
 The following ideas remain intentionally unscheduled until concrete use cases justify their complexity:
 
 - Context Window summarization.
+- Conversation-adaptive Repository Map ranking (whole-context relevance, as ADR-0001 originally predicted for v2).
 - Repository Memory.
 - Agent-authored Extensions and their review or distribution workflow.
 
