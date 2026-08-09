@@ -14,17 +14,27 @@ import (
 // color alone (design guide §6). The baseline is 16-color-safe and chosen for
 // contrast on dark terminals.
 type paletteTokens struct {
-	thinking lipgloss.Color
-	working  lipgloss.Color
-	awaiting lipgloss.Color
-	prompt   lipgloss.Color
+	thinking      lipgloss.Color
+	working       lipgloss.Color
+	awaiting      lipgloss.Color
+	prompt        lipgloss.Color
+	user          lipgloss.Color
+	toolOutput    lipgloss.Color
+	commandReport lipgloss.Color
+	rule          lipgloss.Color
+	idle          lipgloss.Color
 }
 
 var palette = paletteTokens{
-	thinking: lipgloss.Color("11"), // bright yellow
-	working:  lipgloss.Color("14"), // bright cyan
-	awaiting: lipgloss.Color("9"),  // bright red
-	prompt:   lipgloss.Color("10"), // bright green
+	thinking:      lipgloss.Color("11"), // bright yellow
+	working:       lipgloss.Color("14"), // bright cyan
+	awaiting:      lipgloss.Color("9"),  // bright red
+	prompt:        lipgloss.Color("10"), // bright green
+	user:          lipgloss.Color("12"), // bright blue
+	toolOutput:    lipgloss.Color("6"),  // cyan
+	commandReport: lipgloss.Color("13"), // bright magenta
+	rule:          lipgloss.Color("8"),  // gray
+	idle:          lipgloss.Color("8"),  // gray
 }
 
 // indicatorStyle maps a Working Indicator state to its glyph, label, and
@@ -32,6 +42,8 @@ var palette = paletteTokens{
 // conveyed by color alone. The zero indicator (no event yet) renders nothing.
 func indicatorStyle(i activity.Indicator) (glyph, label string, color lipgloss.Color) {
 	switch i {
+	case activity.Idle:
+		return "●", "idle", palette.idle
 	case activity.Thinking:
 		return "●", "thinking", palette.thinking
 	case activity.Working:
@@ -46,7 +58,8 @@ func indicatorStyle(i activity.Indicator) (glyph, label string, color lipgloss.C
 // statusBar renders the Working Indicator (glyph, label, and color), the
 // active Tool, and the current Provider/Model. Idle (no indicator event yet)
 // shows just the Tool and the Selection, so the bar is always visible and
-// never claims a state the Agent did not report.
+// never claims a state the Agent did not report; a completed Turn's Idle
+// state is reported by the Agent, never inferred by the shell.
 func (m *Model) statusBar() string {
 	m.mu.Lock()
 	indicator, activeTool := m.indicator, m.activeTool

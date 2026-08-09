@@ -32,9 +32,10 @@ const wheelScrollLines = 3
 // Model is the bubbletea application model for the terminal UI. It is also
 // the in-memory activity Sink and the Agent's output Writer: the Agent
 // streams Working Indicator transitions, active-Tool reports, Change events,
-// and model text straight into the panes, so the shell never infers Turn
-// state. The Agent runs inside a tea.Cmd goroutine while Update and View run
-// on the program loop; mu guards every field the two sides share.
+// typed Tool Output and Command Report events, and model text straight into
+// the panes, so the shell never infers Turn state. The Agent runs inside a
+// tea.Cmd goroutine while Update and View run on the program loop; mu guards
+// every field the two sides share.
 type Model struct {
 	runner   Runner
 	commands CommandHandler
@@ -42,15 +43,16 @@ type Model struct {
 	provider string    // current Provider name for the status bar
 	model    string    // current Model name for the status bar
 
-	mu         sync.Mutex
-	program    *tea.Program
-	running    bool
-	indicator  activity.Indicator
-	activeTool string
-	changes    []activity.Change
-	transcript strings.Builder
-	viewport   viewport.Model
-	follow     bool // pin the Transcript to the newest content
+	mu           sync.Mutex
+	program      *tea.Program
+	running      bool
+	indicator    activity.Indicator
+	activeTool   string
+	changes      []activity.Change
+	transcript   []transcriptEntry
+	suppressEcho bool // the next Write is a typed block's inline echo; drop it
+	viewport     viewport.Model
+	follow       bool // pin the Transcript to the newest content
 
 	repaint chan struct{} // coalesced redraw triggers for the forwarder
 
@@ -101,29 +103,44 @@ func (m *Model) SetRunner(runner Runner) { m.runner = runner }
 // SetCommands installs the "/" line dispatch (the CLI's command handling).
 func (m *Model) SetCommands(handler CommandHandler) { m.commands = handler }
 
-// Append adds text to the Transcript pane (session notices, command replies,
-// Turn reports) and schedules a repaint.
+// Append adds a shell notice to the Transcript pane (session notices, command
+// replies, Turn reports) and schedules a repaint.
 func (m *Model) Append(text string) {
-	m.appendText(text)
+	m.appendEntry(msgText, text)
 	m.notify()
 }
 
 // Write implements io.Writer so the Agent's streamed output lands in the
-// Transcript pane as it arrives.
+// Transcript pane as it arrives. The Write immediately following a typed Tool
+// Output or Command Report event carries that block's inline echo, which the
+// pane already rendered from the seam; it is dropped so the block appears
+// once and the inline renderer's plain text never leaks into the pane.
 func (m *Model) Write(p []byte) (int, error) {
-	m.appendText(string(p))
+	m.mu.Lock()
+	suppress := m.suppressEcho
+	m.suppressEcho = false
+	if !suppress {
+		m.appendEntryLocked(msgText, string(p))
+	}
+	m.mu.Unlock()
 	m.notify()
 	return len(p), nil
 }
 
-// appendText appends to the Transcript and refreshes the viewport content
-// under the mutex, so the Agent's streamed output and the program loop never
-// race on the pane.
-func (m *Model) appendText(text string) {
+// appendEntry appends one structured message and schedules a repaint.
+func (m *Model) appendEntry(kind messageKind, text string) {
 	m.mu.Lock()
-	m.transcript.WriteString(text)
-	m.viewport.SetContent(m.transcript.String())
+	m.appendEntryLocked(kind, text)
 	m.mu.Unlock()
+	m.notify()
+}
+
+// appendEntryLocked appends one structured message and refreshes the viewport
+// content at the current pane width. Callers hold m.mu, so the Agent's
+// streamed output and the program loop never race on the pane.
+func (m *Model) appendEntryLocked(kind messageKind, text string) {
+	m.transcript = append(m.transcript, transcriptEntry{kind: kind, text: text})
+	m.viewport.SetContent(renderTranscript(m.transcript, m.paneWidthLocked()))
 }
 
 // Indicator implements activity.Sink: the status bar's Working Indicator.
@@ -148,6 +165,28 @@ func (m *Model) ActiveTool(name string) {
 func (m *Model) Change(c activity.Change) {
 	m.mu.Lock()
 	m.changes = append(m.changes, c)
+	m.mu.Unlock()
+	m.notify()
+}
+
+// ToolOutput implements activity.Sink: the pane renders the echoed Tool
+// Result — or refusal echo — as a separated, styled block, and drops the
+// inline echo the Agent writes for the inline renderer right afterwards.
+func (m *Model) ToolOutput(t activity.ToolOutput) {
+	m.mu.Lock()
+	m.suppressEcho = true
+	m.appendEntryLocked(msgToolOutput, formatToolOutputBlock(t))
+	m.mu.Unlock()
+	m.notify()
+}
+
+// CommandReport implements activity.Sink: the pane renders the gated call's
+// Command Report as a separated, styled block, and drops the inline echo
+// that follows it.
+func (m *Model) CommandReport(r activity.CommandReport) {
+	m.mu.Lock()
+	m.suppressEcho = true
+	m.appendEntryLocked(msgCommandReport, formatCommandReportBlock(r))
 	m.mu.Unlock()
 	m.notify()
 }
@@ -306,7 +345,7 @@ func (m *Model) submit() tea.Cmd {
 		m.Append("deku: no Turn runner is attached\n")
 		return nil
 	}
-	m.Append("> " + request + "\n")
+	m.appendEntry(msgUser, request)
 	m.turnActive = true
 	return func() tea.Msg {
 		result, err := m.runner.Turn(context.Background(), request)
@@ -383,6 +422,14 @@ func (m *Model) View() string {
 func (m *Model) paneHeight() int {
 	_, height := m.size()
 	return max(1, height-2)
+}
+
+// paneWidthLocked is the Transcript pane's width, defaulting to 80 before the
+// first WindowSizeMsg (also how tests render). Callers hold m.mu, which
+// guards the width read against the program loop's WindowSizeMsg writes.
+func (m *Model) paneWidthLocked() int {
+	width, _ := m.size()
+	return width
 }
 
 // size returns the terminal dimensions, defaulting to 80x24 before the first
