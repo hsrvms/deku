@@ -243,7 +243,7 @@ The Agent dispatches events to the display or to the tool execution buffer based
 
 ## Working Indicator
 
-The visible state Deku shows while a Turn is in progress, so the user can tell what the Agent is doing. It distinguishes thinking (the Model has been called but produced nothing yet), working (a Tool is executing), and awaiting Approval (the loop is paused for a user decision). The indicator is driven by the Agent, the only module that knows the current Turn state.
+The visible state Deku shows for the Agent's Turn status, so the user can tell what the Agent is doing. It distinguishes idle (no Turn is in progress — the Agent reports it whenever a Turn completes, so the display never claims thinking between Turns), thinking (the Model has been called but produced nothing yet), working (a Tool is executing), and awaiting Approval (the loop is paused for a user decision). The indicator is driven by the Agent, the only module that knows the current Turn state.
 
 ---
 

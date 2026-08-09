@@ -6,7 +6,10 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"os"
+	"path/filepath"
 	"reflect"
+	"regexp"
 	"strings"
 	"sync"
 	"testing"
@@ -52,6 +55,34 @@ func ctrlD() tea.Msg     { return tea.KeyMsg{Type: tea.KeyCtrlD} }
 func pgUp() tea.Msg      { return tea.KeyMsg{Type: tea.KeyPgUp} }
 func wheelUp() tea.Msg   { return tea.MouseMsg{Button: tea.MouseButtonWheelUp} }
 func wheelDown() tea.Msg { return tea.MouseMsg{Button: tea.MouseButtonWheelDown} }
+
+// stripANSI removes SGR sequences so tests can assert rendered text without
+// depending on ANSI details.
+var ansiRegexp = regexp.MustCompile(`\x1b\[[0-9;]*m`)
+
+func stripANSI(s string) string { return ansiRegexp.ReplaceAllString(s, "") }
+
+// userMessageLine returns the stripped Transcript line that carries the
+// submitted request, or "" when it is not rendered.
+func userMessageLine(view, request string) string {
+	for _, line := range strings.Split(stripANSI(view), "\n") {
+		if strings.HasSuffix(line, request) {
+			return line
+		}
+	}
+	return ""
+}
+
+// ruleLines counts the full-width separator lines in a rendered view.
+func ruleLines(view string) int {
+	count := 0
+	for _, line := range strings.Split(stripANSI(view), "\n") {
+		if line == strings.Repeat("─", 80) {
+			count++
+		}
+	}
+	return count
+}
 
 // completeTurn runs a pending Turn command (the tea.Cmd returned by Enter)
 // and feeds its message to the model, as the program loop would.
@@ -113,8 +144,14 @@ func TestEnterSubmitsTurnAndRendersResult(t *testing.T) {
 	if cmd == nil {
 		t.Fatal("Enter on an idle shell must start a Turn")
 	}
-	if view := m.View(); !strings.Contains(view, "> explain this") {
-		t.Errorf("Transcript must echo the submitted request, got %q", view)
+	// The request renders right-aligned in a semantic token color, with a
+	// separator at the exchange boundary.
+	want := strings.Repeat(" ", 80-len("explain this")) + "explain this"
+	if line := userMessageLine(m.View(), "explain this"); line != want {
+		t.Errorf("user message line = %q, want right-aligned %q", line, want)
+	}
+	if got := ruleLines(m.View()); got != 1 {
+		t.Errorf("separator above the user message = %d, want 1", got)
 	}
 	if !m.turnActive {
 		t.Error("Turn must be active after submission")
@@ -188,6 +225,98 @@ func TestStatusBarShowsIndicatorToolAndSelection(t *testing.T) {
 	m.Indicator(activity.AwaitingApproval)
 	if view := m.View(); !strings.Contains(view, "? awaiting approval") {
 		t.Errorf("Awaiting-Approval indicator missing, got %q", view)
+	}
+	m.Indicator(activity.Idle)
+	if view := m.View(); !strings.Contains(view, "● idle") {
+		t.Errorf("Idle indicator missing, got %q", view)
+	}
+}
+
+func TestToolOutputEventRendersDistinctBlock(t *testing.T) {
+	m := newTestModel(io.Discard)
+	m.ToolOutput(activity.ToolOutput{Name: "read", Tier: "read", Content: "package main\n"})
+
+	// The Agent also writes the inline echo of the same block right after
+	// the event; the pane must drop it so the block appears exactly once.
+	if _, err := m.Write([]byte("Tool output (read, read):\n  package main\n")); err != nil {
+		t.Fatalf("Write() error = %v", err)
+	}
+
+	view := m.View()
+	if got := strings.Count(view, "Tool output (read, read):"); got != 1 {
+		t.Errorf("Tool Output block must render once, got %d", got)
+	}
+	if !strings.Contains(view, "package main") {
+		t.Errorf("Tool Output content missing, got %q", view)
+	}
+	if got := ruleLines(view); got != 2 {
+		t.Errorf("separators around the Tool Output block = %d, want 2", got)
+	}
+}
+
+func TestCommandReportEventRendersDistinctBlock(t *testing.T) {
+	m := newTestModel(io.Discard)
+	m.CommandReport(activity.CommandReport{ToolName: "write", Tier: "write", Report: "Write: notes.txt"})
+
+	// The Approval gate's inline prompt (report plus y/n question) is the
+	// Write that follows the event; the pane drops it and keeps the block.
+	if _, err := m.Write([]byte("The write tool is classified as write.\nCommand Report:\n  Write: notes.txt\nApprove? [y/n] ")); err != nil {
+		t.Fatalf("Write() error = %v", err)
+	}
+
+	view := m.View()
+	if got := strings.Count(view, "Command Report (write, write):"); got != 1 {
+		t.Errorf("Command Report block must render once, got %d", got)
+	}
+	if !strings.Contains(view, "Write: notes.txt") {
+		t.Errorf("Report lines missing, got %q", view)
+	}
+	if strings.Contains(view, "Approve?") {
+		t.Errorf("the inline approval prompt must be dropped, got %q", view)
+	}
+	if got := ruleLines(view); got != 2 {
+		t.Errorf("separators around the Command Report block = %d, want 2", got)
+	}
+}
+
+func TestSeparatorsFrameExchangesAndBlocksInSequence(t *testing.T) {
+	m := newTestModel(io.Discard)
+	m.SetRunner(&stubRunner{})
+
+	typeText(m, "first")
+	_, cmd := m.Update(enterKey())
+	_ = cmd
+	m.Indicator(activity.Idle)
+	m.ToolOutput(activity.ToolOutput{Name: "read", Tier: "read", Content: "main.go"})
+	if _, err := m.Write([]byte("Tool output (read, read):\n  main.go\n")); err != nil {
+		t.Fatalf("Write() error = %v", err)
+	}
+	// The response opens directly after the block's closing frame; its
+	// separator must collapse into that frame, not add a second rule.
+	if _, err := m.Write([]byte("inspected")); err != nil {
+		t.Fatalf("Write() error = %v", err)
+	}
+
+	// One rule above the user message, two around the Tool Output block
+	// (the block's closing rule doubles as the response opening).
+	if got := ruleLines(m.View()); got != 3 {
+		t.Errorf("separators = %d, want 3 (exchange boundary and block frame)", got)
+	}
+}
+
+func TestConsecutiveStreamedChunksStayOneMessage(t *testing.T) {
+	m := newTestModel(io.Discard)
+	if _, err := m.Write([]byte("Hello, ")); err != nil {
+		t.Fatalf("Write() error = %v", err)
+	}
+	if _, err := m.Write([]byte("world!")); err != nil {
+		t.Fatalf("Write() error = %v", err)
+	}
+	if view := m.View(); !strings.Contains(view, "Hello, world!") {
+		t.Errorf("Transcript must accumulate streamed chunks, got %q", view)
+	}
+	if got := ruleLines(m.View()); got != 0 {
+		t.Errorf("streamed text must not add separators, got %d", got)
 	}
 }
 
@@ -476,8 +605,11 @@ func TestModelDrivesRealAgentTurn(t *testing.T) {
 	if !strings.Contains(view, "Hello, world!") {
 		t.Errorf("Transcript must stream the provider text, got %q", view)
 	}
-	if m.indicator != activity.Thinking {
-		t.Errorf("indicator = %q, want thinking after a completed Turn", m.indicator)
+	if m.indicator != activity.Idle {
+		t.Errorf("indicator = %q, want idle after a completed Turn", m.indicator)
+	}
+	if view := m.View(); !strings.Contains(view, "● idle") {
+		t.Errorf("status bar must show the idle indicator, got %q", view)
 	}
 	if len(m.Changes()) != 0 {
 		t.Errorf("Changes() = %#v, want none for a text-only Turn", m.Changes())
@@ -593,8 +725,8 @@ func TestProgramLoopStreamsRealAgentTurnEndToEnd(t *testing.T) {
 	close(keys.release)
 
 	// The request echo and the status bar must be in the frames.
-	if !strings.Contains(frames.String(), "> hello world") {
-		t.Errorf("frames must echo the request, got %q", frames.String())
+	if !strings.Contains(frames.String(), "hello world") {
+		t.Errorf("frames must show the submitted request, got %q", frames.String())
 	}
 	if !strings.Contains(frames.String(), "tokenrouter/qwen-2.5-coder") {
 		t.Errorf("frames must show the status bar Selection, got %q", frames.String())
@@ -605,5 +737,110 @@ func TestProgramLoopStreamsRealAgentTurnEndToEnd(t *testing.T) {
 	messages := conversation.Messages
 	if len(messages) != 2 || messages[0].Role != session.RoleUser || messages[1].Role != session.RoleAssistant {
 		t.Errorf("session messages = %#v, want user then assistant", messages)
+	}
+}
+
+// TestRealAgentTurnRendersTypedBlocksEndToEnd runs a real Agent through the
+// shell for a Turn that executes a gated Tool: the Command Report and Tool
+// Output must render as typed blocks from the seam, the inline echo writes
+// must be dropped, and the Agent's Idle indicator must end the Turn.
+func TestRealAgentTurnRendersTypedBlocksEndToEnd(t *testing.T) {
+	root := t.TempDir()
+	registry, err := tool.NewRegistry(root)
+	if err != nil {
+		t.Fatalf("NewRegistry() error = %v", err)
+	}
+	store, err := session.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewStore() error = %v", err)
+	}
+	conversation, err := store.Create()
+	if err != nil {
+		t.Fatalf("Create() error = %v", err)
+	}
+	providerStub := &scriptedProvider{
+		responses: [][]provider.Event{
+			{provider.ToolCall{ID: "call-1", Name: "write", Arguments: `{"path":"notes.txt","content":"hello\n"}`}, provider.Done{}},
+			{provider.TextDelta{Text: "Created notes.txt."}, provider.Done{}},
+		},
+	}
+	approvalReader, approvalWriter := io.Pipe()
+	m := New("tokenrouter", "qwen-2.5-coder", approvalWriter)
+	runner := agent.NewWithActivity(providerStub, "qwen-2.5-coder", conversation, m, approvalReader, registry, approval.DefaultPolicy(), nil, m)
+	m.SetRunner(runner)
+
+	typeText(m, "create notes.txt")
+	_, cmd := m.Update(enterKey())
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		_, _ = approvalWriter.Write([]byte("y\n")) // the gate blocks until this arrives
+	}()
+	completeTurn(t, m, cmd)
+	<-done
+
+	view := m.View()
+	for _, want := range []string{
+		"Command Report (write, write):",
+		"Write: notes.txt",
+		"Tool output (write, write):",
+		"Wrote notes.txt.",
+		"Created notes.txt.",
+	} {
+		if !strings.Contains(view, want) {
+			t.Errorf("Transcript must contain %q, got %q", want, view)
+		}
+	}
+	// Each block renders once: the inline echo writes are dropped.
+	if got := strings.Count(view, "Command Report (write, write):"); got != 1 {
+		t.Errorf("Command Report block count = %d, want 1", got)
+	}
+	if got := strings.Count(view, "Tool output (write, write):"); got != 1 {
+		t.Errorf("Tool Output block count = %d, want 1", got)
+	}
+	if strings.Contains(view, "Approve?") {
+		t.Errorf("the inline approval prompt must be dropped, got %q", view)
+	}
+	if m.indicator != activity.Idle {
+		t.Errorf("indicator = %q, want idle after the completed Turn", m.indicator)
+	}
+	if view := m.View(); !strings.Contains(view, "● idle") {
+		t.Errorf("status bar must show the idle indicator, got %q", view)
+	}
+	if _, err := os.Stat(filepath.Join(root, "notes.txt")); err != nil {
+		t.Fatalf("approved write did not create the file: %v", err)
+	}
+}
+
+func TestSeparatorAboveResponseAndNeverOnItsLastLine(t *testing.T) {
+	m := newTestModel(io.Discard)
+	m.SetRunner(&stubRunner{})
+
+	typeText(m, "first")
+	_, cmd := m.Update(enterKey())
+	completeTurn(t, m, cmd)
+	// Model text streams without a trailing newline, as the Agent writes it.
+	if _, err := m.Write([]byte("done")); err != nil {
+		t.Fatalf("Write() error = %v", err)
+	}
+	// The next exchange's boundary separator must land under the response,
+	// never on its last line.
+	typeText(m, "second")
+	_, cmd = m.Update(enterKey())
+	_ = cmd
+
+	view := m.View()
+	// One separator above the first user request, one above its response,
+	// one above the second user request.
+	if got := ruleLines(view); got != 3 {
+		t.Errorf("separators = %d, want 3", got)
+	}
+	for _, line := range strings.Split(stripANSI(view), "\n") {
+		if strings.Contains(line, "done") && strings.Contains(line, "─") {
+			t.Errorf("separator intercepts the response line %q", line)
+		}
+	}
+	if line := userMessageLine(view, "second"); !strings.HasPrefix(strings.TrimSpace(line), "second") {
+		t.Errorf("second user message missing, got %q", view)
 	}
 }

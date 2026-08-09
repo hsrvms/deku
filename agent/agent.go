@@ -70,6 +70,7 @@ type Agent struct {
 	input         *bufio.Reader
 	tools         *tool.Registry
 	approval      approval.Decider
+	policy        approval.Policy
 	toolErr       error
 	repoMap       *repomap.Builder
 	repoMapErr    error
@@ -190,6 +191,7 @@ func newAgent(p provider.Chat, model string, conversation *session.Session, outp
 		input:         reader,
 		tools:         registry,
 		approval:      gate,
+		policy:        policy,
 		toolErr:       toolErr,
 		repo:          repo,
 		commitMode:    mode,
@@ -290,6 +292,10 @@ func (a *Agent) Turn(ctx context.Context, request string) (TurnResult, error) {
 
 	a.turnMu.Lock()
 	defer a.turnMu.Unlock()
+	// The Agent is the sole emitter of Turn state: every exit from a Turn —
+	// success, failure, or interruption — reports Idle, so a renderer never
+	// claims thinking between Turns (ADR-0010).
+	defer func() { a.sink.Indicator(activity.Idle) }()
 
 	if err := a.initialize(ctx); err != nil {
 		return TurnResult{}, err
@@ -428,6 +434,16 @@ func (a *Agent) runTool(ctx context.Context, call provider.ToolCall) (string, er
 	if strings.TrimSpace(report) == "" {
 		return a.refuseTool(call.Name, declared, "its Command Report could not be rendered", fmt.Sprintf("tool error: the %s tool call has no Command Report; refusing to execute it", call.Name))
 	}
+	// The Command Report is forwarded through the activity seam at the point
+	// it is rendered, so a display can show it as a typed block; the inline
+	// renderer keeps receiving the same report through the Approval prompt,
+	// unchanged. The tier is the effective one under the policy, matching
+	// what the Approval gate displays.
+	a.sink.CommandReport(activity.CommandReport{
+		ToolName: call.Name,
+		Tier:     string(a.policy.EffectiveTier(declared, call.Name)),
+		Report:   report,
+	})
 	request := approval.Request{ToolName: call.Name, Declared: declared, Report: report}
 	// The awaiting-approval indicator is emitted only when the loop actually
 	// pauses for a user decision: an auto-approved call transitions Thinking
@@ -491,6 +507,10 @@ func (a *Agent) refuseTool(name string, tier approval.Tier, notice, content stri
 // unknown, as for a refused call to an unknown tool); the content is indented
 // to keep it distinct from streamed model text.
 func (a *Agent) echoToolResult(name string, tier approval.Tier, content string) error {
+	// The typed event is emitted at the point of the echo — execution or
+	// refusal — so a display renders the block from the seam; the plain text
+	// below is still written for the inline renderer, unchanged.
+	a.sink.ToolOutput(activity.ToolOutput{Name: name, Tier: string(tier), Content: content})
 	var builder strings.Builder
 	if tier == "" {
 		fmt.Fprintf(&builder, "Tool output (%s):\n", name)

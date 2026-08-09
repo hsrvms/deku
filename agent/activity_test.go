@@ -22,11 +22,19 @@ type recordingSink struct {
 	indicators []activity.Indicator
 	tools      []string
 	changes    []activity.Change
+	outputs    []activity.ToolOutput
+	reports    []activity.CommandReport
 }
 
 func (s *recordingSink) Indicator(i activity.Indicator) { s.indicators = append(s.indicators, i) }
 func (s *recordingSink) ActiveTool(name string)         { s.tools = append(s.tools, name) }
 func (s *recordingSink) Change(c activity.Change)       { s.changes = append(s.changes, c) }
+func (s *recordingSink) ToolOutput(t activity.ToolOutput) {
+	s.outputs = append(s.outputs, t)
+}
+func (s *recordingSink) CommandReport(r activity.CommandReport) {
+	s.reports = append(s.reports, r)
+}
 
 func newActivityAgent(t *testing.T, root string, providerStub provider.Chat, input string, sink activity.Sink) (*Agent, *session.Session) {
 	t.Helper()
@@ -74,6 +82,7 @@ func TestAgentEmitsDeterministicActivityStreamForWriteTurn(t *testing.T) {
 		activity.AwaitingApproval,
 		activity.Working,
 		activity.Thinking,
+		activity.Idle,
 	}
 	if !reflect.DeepEqual(sink.indicators, wantIndicators) {
 		t.Errorf("indicators = %#v, want %#v", sink.indicators, wantIndicators)
@@ -85,6 +94,14 @@ func TestAgentEmitsDeterministicActivityStreamForWriteTurn(t *testing.T) {
 	wantTools := []string{"write"}
 	if !reflect.DeepEqual(sink.tools, wantTools) {
 		t.Errorf("active tools = %#v, want %#v", sink.tools, wantTools)
+	}
+	wantOutputs := []activity.ToolOutput{{Name: "write", Tier: "write", Content: "Wrote notes.txt."}}
+	if !reflect.DeepEqual(sink.outputs, wantOutputs) {
+		t.Errorf("tool outputs = %#v, want %#v", sink.outputs, wantOutputs)
+	}
+	wantReports := []activity.CommandReport{{ToolName: "write", Tier: "write", Report: "Write: notes.txt"}}
+	if !reflect.DeepEqual(sink.reports, wantReports) {
+		t.Errorf("command reports = %#v, want %#v", sink.reports, wantReports)
 	}
 }
 
@@ -114,6 +131,7 @@ func TestAgentEmitsWorkingStreamWithoutChangeForReadTool(t *testing.T) {
 		activity.Thinking,
 		activity.Working,
 		activity.Thinking,
+		activity.Idle,
 	}
 	if !reflect.DeepEqual(sink.indicators, wantIndicators) {
 		t.Errorf("indicators = %#v, want %#v", sink.indicators, wantIndicators)
@@ -124,6 +142,14 @@ func TestAgentEmitsWorkingStreamWithoutChangeForReadTool(t *testing.T) {
 	wantTools := []string{"read"}
 	if !reflect.DeepEqual(sink.tools, wantTools) {
 		t.Errorf("active tools = %#v, want %#v", sink.tools, wantTools)
+	}
+	wantOutputs := []activity.ToolOutput{{Name: "read", Tier: "read", Content: "package main\n"}}
+	if !reflect.DeepEqual(sink.outputs, wantOutputs) {
+		t.Errorf("tool outputs = %#v, want %#v", sink.outputs, wantOutputs)
+	}
+	wantReports := []activity.CommandReport{{ToolName: "read", Tier: "read", Report: "Read: main.go"}}
+	if !reflect.DeepEqual(sink.reports, wantReports) {
+		t.Errorf("command reports = %#v, want %#v", sink.reports, wantReports)
 	}
 }
 
@@ -146,6 +172,7 @@ func TestAgentEmitsAwaitingApprovalWithoutWorkingForRejectedTool(t *testing.T) {
 		activity.Thinking,
 		activity.AwaitingApproval,
 		activity.Thinking,
+		activity.Idle,
 	}
 	if !reflect.DeepEqual(sink.indicators, wantIndicators) {
 		t.Errorf("indicators = %#v, want %#v", sink.indicators, wantIndicators)
@@ -155,6 +182,13 @@ func TestAgentEmitsAwaitingApprovalWithoutWorkingForRejectedTool(t *testing.T) {
 	}
 	if len(sink.tools) != 0 {
 		t.Errorf("active tools = %#v, want none for a rejected tool", sink.tools)
+	}
+	if len(sink.outputs) != 0 {
+		t.Errorf("tool outputs = %#v, want none for a rejected tool", sink.outputs)
+	}
+	wantReports := []activity.CommandReport{{ToolName: "write", Tier: "write", Report: "Write: notes.txt"}}
+	if !reflect.DeepEqual(sink.reports, wantReports) {
+		t.Errorf("command reports = %#v, want %#v", sink.reports, wantReports)
 	}
 }
 
@@ -219,5 +253,93 @@ func TestAgentEmitsChangeEventForEveryEditToSamePath(t *testing.T) {
 	wantTools := []string{"edit", "edit"}
 	if !reflect.DeepEqual(sink.tools, wantTools) {
 		t.Errorf("active tools = %#v, want one per executed edit", sink.tools)
+	}
+}
+
+func TestAgentEmitsToolOutputForRefusedUnknownTool(t *testing.T) {
+	root := t.TempDir()
+	providerStub := &continuationProvider{
+		responses: [][]provider.Event{
+			{provider.ToolCall{ID: "call-1", Name: "nosuch", Arguments: `{"path":"x"}`}, provider.Done{}},
+			{provider.TextDelta{Text: "The call was refused."}, provider.Done{}},
+		},
+	}
+	sink := &recordingSink{}
+	runner, _ := newActivityAgent(t, root, providerStub, "", sink)
+
+	if _, err := runner.Turn(context.Background(), "Call an unknown tool."); err != nil {
+		t.Fatalf("Turn() error = %v", err)
+	}
+
+	// A refused call to an undeclared Tool echoes with an unknown tier, so
+	// the typed event omits it (CONTEXT.md: Tool Output).
+	wantOutputs := []activity.ToolOutput{{Name: "nosuch", Tier: "", Content: "tool error: unknown tool \"nosuch\""}}
+	if !reflect.DeepEqual(sink.outputs, wantOutputs) {
+		t.Errorf("tool outputs = %#v, want %#v", sink.outputs, wantOutputs)
+	}
+	if len(sink.reports) != 0 {
+		t.Errorf("command reports = %#v, want none for a refused call", sink.reports)
+	}
+}
+
+func TestAgentEmitsIdleWhenTurnFails(t *testing.T) {
+	root := t.TempDir()
+	providerStub := &continuationProvider{
+		responses: [][]provider.Event{
+			{provider.ToolCall{ID: "call-1", Name: "write", Arguments: `{"path":"notes.txt","content":"hello\n"}`}, provider.Done{}},
+		},
+	}
+	sink := &recordingSink{}
+	runner, _ := newActivityAgent(t, root, providerStub, "", sink)
+
+	// The scripted input is empty, so the Approval gate cannot answer; the
+	// Turn fails instead of hanging, and must still report Idle so the
+	// status bar never claims thinking between Turns.
+	_, err := runner.Turn(context.Background(), "Create notes.txt.")
+	if err == nil {
+		t.Fatal("Turn() succeeded, want an Approval failure")
+	}
+	if len(sink.indicators) == 0 || sink.indicators[len(sink.indicators)-1] != activity.Idle {
+		t.Errorf("last indicator = %#v, want idle after a failed Turn", sink.indicators)
+	}
+}
+
+func TestAgentEmitsCommandReportWithEffectiveTier(t *testing.T) {
+	root := t.TempDir()
+	providerStub := &continuationProvider{
+		responses: [][]provider.Event{
+			{provider.ToolCall{ID: "call-1", Name: "write", Arguments: `{"path":"notes.txt","content":"hello\n"}`}, provider.Done{}},
+			{provider.TextDelta{Text: "Created notes.txt."}, provider.Done{}},
+		},
+	}
+	sink := &recordingSink{}
+	registry, err := tool.NewRegistry(root)
+	if err != nil {
+		t.Fatalf("NewRegistry() error = %v", err)
+	}
+	store, err := session.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewStore() error = %v", err)
+	}
+	conversation, err := store.Create()
+	if err != nil {
+		t.Fatalf("Create() error = %v", err)
+	}
+	var output bytes.Buffer
+	// Overriding write to Read makes the call auto-approve; the Command
+	// Report must still name the effective tier, matching the gate.
+	policy := approval.NewPolicy(map[string]approval.Tier{"write": approval.Read}, nil)
+	runner := NewWithActivity(providerStub, "test-model", conversation, &output, strings.NewReader(""), registry, policy, nil, sink)
+
+	if _, err := runner.Turn(context.Background(), "Create notes.txt."); err != nil {
+		t.Fatalf("Turn() error = %v", err)
+	}
+	wantReports := []activity.CommandReport{{ToolName: "write", Tier: "read", Report: "Write: notes.txt"}}
+	if !reflect.DeepEqual(sink.reports, wantReports) {
+		t.Errorf("command reports = %#v, want %#v", sink.reports, wantReports)
+	}
+	wantOutputs := []activity.ToolOutput{{Name: "write", Tier: "read", Content: "Wrote notes.txt."}}
+	if !reflect.DeepEqual(sink.outputs, wantOutputs) {
+		t.Errorf("tool outputs = %#v, want %#v", sink.outputs, wantOutputs)
 	}
 }
