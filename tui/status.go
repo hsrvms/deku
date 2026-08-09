@@ -23,6 +23,8 @@ type paletteTokens struct {
 	commandReport lipgloss.Color
 	rule          lipgloss.Color
 	idle          lipgloss.Color
+	diffAdd       lipgloss.Color
+	diffDel       lipgloss.Color
 }
 
 var palette = paletteTokens{
@@ -35,6 +37,8 @@ var palette = paletteTokens{
 	commandReport: lipgloss.Color("13"), // bright magenta
 	rule:          lipgloss.Color("8"),  // gray
 	idle:          lipgloss.Color("8"),  // gray
+	diffAdd:       lipgloss.Color("10"), // bright green
+	diffDel:       lipgloss.Color("9"),  // bright red
 }
 
 // indicatorStyle maps a Working Indicator state to its glyph, label, and

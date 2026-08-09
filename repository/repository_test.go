@@ -436,3 +436,113 @@ func TestValidate(t *testing.T) {
 		t.Errorf("Validate(false).Command = %q, want false", failing.Command)
 	}
 }
+
+func TestDiff(t *testing.T) {
+	dir := initRepo(t)
+	commitFile(t, dir, "main.go", "package main\n\nfunc main() {}\n")
+	commitFile(t, dir, "keep.txt", "unchanged\n")
+
+	repo, err := New(dir)
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+
+	// A tracked modification, an untracked new file, an empty new file, and
+	// an unknown path.
+	modify(t, dir, "main.go", "package main\n\nfunc main() { println(\"hi\") }\n")
+	modify(t, dir, "notes.txt", "hello\nworld\n")
+	modify(t, dir, "single.txt", "no trailing newline")
+	modify(t, dir, "empty.txt", "")
+
+	diffs, err := repo.Diff([]string{"main.go", "keep.txt", "notes.txt", "single.txt", "empty.txt", "missing.txt"})
+	if err != nil {
+		t.Fatalf("Diff() error = %v", err)
+	}
+
+	// Tracked modification: the unified diff against the index.
+	mainDiff := diffs["main.go"]
+	for _, want := range []string{
+		"diff --git a/main.go b/main.go",
+		"--- a/main.go",
+		"+++ b/main.go",
+		"-func main() {}",
+		`+func main() { println("hi") }`,
+	} {
+		if !strings.Contains(mainDiff, want) {
+			t.Errorf("main.go diff missing %q:\n%s", want, mainDiff)
+		}
+	}
+
+	// Tracked and unchanged: no diff.
+	if diffs["keep.txt"] != "" {
+		t.Errorf("keep.txt diff = %q, want empty", diffs["keep.txt"])
+	}
+
+	// Untracked new file: a full-content addition entry.
+	notesDiff := diffs["notes.txt"]
+	for _, want := range []string{
+		"diff --git a/notes.txt b/notes.txt",
+		"new file mode 100644",
+		"--- /dev/null",
+		"+++ b/notes.txt",
+		"@@ -0,0 +1,2 @@",
+		"+hello",
+		"+world",
+	} {
+		if !strings.Contains(notesDiff, want) {
+			t.Errorf("notes.txt diff missing %q:\n%s", want, notesDiff)
+		}
+		if strings.Contains(notesDiff, "index ") {
+			t.Errorf("notes.txt diff must not carry an index line:\n%s", notesDiff)
+		}
+	}
+
+	// A one-line file with no trailing newline renders one added line.
+	singleDiff := diffs["single.txt"]
+	if !strings.Contains(singleDiff, "@@ -0,0 +1 @@") || !strings.Contains(singleDiff, "+no trailing newline") {
+		t.Errorf("single.txt diff = %q, want a one-line addition", singleDiff)
+	}
+
+	// An empty new file renders an empty addition.
+	if !strings.Contains(diffs["empty.txt"], "@@ -0,0 +0,0 @@") {
+		t.Errorf("empty.txt diff = %q, want an empty addition", diffs["empty.txt"])
+	}
+
+	// An unknown path is not part of the diff.
+	if _, ok := diffs["missing.txt"]; ok {
+		t.Errorf("missing.txt must not appear in the diff, got %q", diffs["missing.txt"])
+	}
+
+	// The query must not stage, stash, or commit: the working tree state is
+	// untouched after Diff.
+	stat := run(t, dir, "git", "status", "--porcelain")
+	if !strings.Contains(stat, " M main.go") {
+		t.Errorf("status after Diff = %q, want main.go still unstaged", stat)
+	}
+	if !strings.Contains(stat, "?? notes.txt") || !strings.Contains(stat, "?? single.txt") || !strings.Contains(stat, "?? empty.txt") {
+		t.Errorf("status after Diff = %q, want new files still untracked", stat)
+	}
+}
+
+func TestDiffEmptyPathSet(t *testing.T) {
+	dir := initRepo(t)
+	repo, err := New(dir)
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+	diffs, err := repo.Diff(nil)
+	if err != nil {
+		t.Fatalf("Diff(nil) error = %v", err)
+	}
+	if len(diffs) != 0 {
+		t.Errorf("Diff(nil) = %#v, want an empty map", diffs)
+	}
+}
+
+// modify writes content to a repository-relative path.
+func modify(t *testing.T, dir, path, content string) {
+	t.Helper()
+	if err := os.WriteFile(filepath.Join(dir, path), []byte(content), 0o600); err != nil {
+		t.Fatal(err)
+	}
+}

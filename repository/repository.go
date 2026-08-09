@@ -416,6 +416,81 @@ func (r *Repo) Commit(paths []string, message string) (string, error) {
 	return r.head()
 }
 
+// Diff returns the cumulative working-tree diff of the given
+// repository-relative paths: one unified diff per path, keyed by path, and ""
+// for a path with no working-tree changes. Tracked paths diff against the
+// index with `git diff --exit-code`; untracked paths — new files — render as
+// full-content addition entries, the shape a Write contributes to the working
+// tree. Diff is a read-only display query for the Turn Diff pane: it never
+// stages, stashes, or commits.
+func (r *Repo) Diff(paths []string) (map[string]string, error) {
+	diffs := make(map[string]string, len(paths))
+	for _, path := range paths {
+		if strings.TrimSpace(path) == "" {
+			continue
+		}
+		out, status, err := r.gitStatus("diff", "--exit-code", "--", path)
+		if err != nil {
+			return nil, err
+		}
+		switch status {
+		case 0:
+			// No working-tree change: either the path is tracked and
+			// unchanged, or untracked and rendered as a new-file entry.
+			_, tracked, err := r.gitStatus("ls-files", "--error-unmatch", "--", path)
+			if err != nil {
+				return nil, err
+			}
+			if tracked == 0 {
+				continue
+			}
+			content, err := os.ReadFile(filepath.Join(r.root, filepath.FromSlash(path)))
+			if err != nil {
+				if errors.Is(err, os.ErrNotExist) {
+					continue
+				}
+				return nil, err
+			}
+			diffs[path] = newFileDiff(path, content)
+		case 1:
+			diffs[path] = out
+		default:
+			return nil, fmt.Errorf("git diff %q: exit status %d", path, status)
+		}
+	}
+	return diffs, nil
+}
+
+// newFileDiff renders an untracked file as a git-style new-file entry: the
+// whole content as additions against /dev/null, without an index line (the
+// display makes no claim about object hashes).
+func newFileDiff(path string, content []byte) string {
+	text := string(content)
+	var lines []string
+	if text != "" {
+		lines = strings.Split(strings.TrimSuffix(text, "\n"), "\n")
+	}
+	var b strings.Builder
+	fmt.Fprintf(&b, "diff --git a/%s b/%s\n", path, path)
+	b.WriteString("new file mode 100644\n")
+	b.WriteString("--- /dev/null\n")
+	fmt.Fprintf(&b, "+++ b/%s\n", path)
+	switch len(lines) {
+	case 0:
+		b.WriteString("@@ -0,0 +0,0 @@\n")
+	case 1:
+		b.WriteString("@@ -0,0 +1 @@\n")
+	default:
+		fmt.Fprintf(&b, "@@ -0,0 +1,%d @@\n", len(lines))
+	}
+	for _, line := range lines {
+		b.WriteByte('+')
+		b.WriteString(line)
+		b.WriteByte('\n')
+	}
+	return b.String()
+}
+
 // Validate runs the validation command in the repository root and reports
 // whether it passed. A command that cannot be started returns an error; a
 // command that exits non-zero is a failed Validation with its captured output.
@@ -452,6 +527,27 @@ func (r *Repo) head() (string, error) {
 		return "", err
 	}
 	return strings.TrimSpace(out), nil
+}
+
+// gitStatus runs a Git command in the repository root and returns its stdout
+// and exit status. A non-zero exit is reported as a status, not an error, for
+// commands whose exit status is data: `git diff --exit-code` (0 no
+// differences, 1 differences found) and `git ls-files --error-unmatch`
+// (0 tracked, 1 untracked). A command that cannot start at all is an error.
+func (r *Repo) gitStatus(args ...string) (string, int, error) {
+	var stdout, stderr bytes.Buffer
+	cmd := exec.Command("git", append([]string{"-C", r.root}, args...)...)
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+	err := cmd.Run()
+	if err == nil {
+		return stdout.String(), 0, nil
+	}
+	var exitErr *exec.ExitError
+	if errors.As(err, &exitErr) {
+		return stdout.String(), exitErr.ExitCode(), nil
+	}
+	return "", 0, fmt.Errorf("git %s: %w", strings.Join(args, " "), err)
 }
 
 // git runs a Git command in the repository root and returns its stdout.
