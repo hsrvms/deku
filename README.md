@@ -154,6 +154,16 @@ Start the interactive chat from a repository:
 go run ./cmd/deku/
 ```
 
+On a real terminal (`TERM` other than `dumb`, no `NO_COLOR`) Deku runs a
+full-screen terminal UI: a streaming, scrollable Transcript pane, a status
+bar with the Working Indicator (`● thinking`, `▶ working`, `? awaiting
+approval` — never color alone) plus the active Tool and the current
+Provider/Model, and a single-line input where you can type while the Agent
+works. `Enter` submits a request (or, during Approval, delivers your
+decision), the mouse wheel and PageUp/PageDown scroll the Transcript, and
+`Ctrl+C` (or `Ctrl+D`) quits. Pipes, non-TTY output, `TERM=dumb`, and
+`NO_COLOR` keep the inline renderer — the `deku> ` prompt — unchanged.
+
 Deku prints the Session ID on startup. Sessions are stored as append-only JSONL
 files under `~/.deku/sessions/` and can be resumed with:
 

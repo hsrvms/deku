@@ -28,11 +28,17 @@ type Change struct {
 	Path string
 }
 
-// Sink receives the Agent's activity stream. The Agent calls Indicator and
-// Change as a Turn progresses; implementations must be safe for sequential use
-// and must not block the Agent loop.
+// Sink receives the Agent's activity stream. The Agent calls Indicator,
+// ActiveTool, and Change as a Turn progresses; implementations must be safe
+// for sequential use and must not block the Agent loop.
+//
+// ActiveTool names the Tool the Agent is about to execute, reported at the
+// moment execution begins, so a renderer's status bar can show which Tool is
+// active while the Working indicator is showing without deriving Turn state
+// itself (ADR-0010).
 type Sink interface {
 	Indicator(Indicator)
+	ActiveTool(name string)
 	Change(Change)
 }
 
@@ -40,6 +46,7 @@ type Sink interface {
 type discard struct{}
 
 func (discard) Indicator(Indicator) {}
+func (discard) ActiveTool(string)   {}
 func (discard) Change(Change)       {}
 
 // Discard returns a Sink that drops all activity. It is the default when no

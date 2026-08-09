@@ -20,6 +20,7 @@ import (
 	"github.com/hsrvms/deku/repository"
 	"github.com/hsrvms/deku/session"
 	"github.com/hsrvms/deku/tool"
+	"github.com/hsrvms/deku/tui"
 	"github.com/hsrvms/deku/version"
 )
 
@@ -144,6 +145,9 @@ func run(args []string, input io.Reader, output, errorOutput io.Writer) int {
 			}
 			return 1
 		}
+	}
+	if tui.Active(lineio.IsTerminal(output), os.Getenv("TERM"), os.Getenv("NO_COLOR")) {
+		return runTUI(providers, selection, conversation, registry, policy, cfg.RepoMap.Exclude, repo, commitMode, cfg.AgentCommits.Validation, errorOutput)
 	}
 	runner, err := agent.NewWithSelection(providers, selection, conversation, output, input, registry, policy, cfg.RepoMap.Exclude, repo, commitMode, cfg.AgentCommits.Validation)
 	if err != nil {
@@ -276,51 +280,103 @@ func runConversation(runner *agent.Agent, providers *provider.Registry, input io
 	return 0
 }
 
-// handleCommand dispatches lines beginning with "/" before they become
-// Turns. The /model command lists the Providers the Agent can authenticate
-// to, or — with a Provider and Model argument — switches the active
-// Selection for subsequent Turns and records the override in the Session.
-func handleCommand(runner *agent.Agent, providers *provider.Registry, line string, output io.Writer) error {
+// runTUI runs the terminal UI: panes for the Transcript, the status bar with
+// the Working Indicator, and the input line. The Agent is constructed here
+// with the shell as its output Writer and activity Sink and with an approval
+// pipe as its input, so Approval decisions typed into the input line reach
+// the waiting gate without either side touching the raw terminal directly.
+func runTUI(providers *provider.Registry, selection provider.Selection, conversation *session.Session, registry *tool.Registry, policy approval.Policy, exclude []string, repo *repository.Repo, mode repository.Mode, validation string, errorOutput io.Writer) int {
+	approvalReader, approvalWriter := io.Pipe()
+	shell := tui.New(selection.Provider, selection.Model, approvalWriter)
+	runner, err := agent.NewWithSelectionAndActivity(providers, selection, conversation, shell, approvalReader, registry, policy, exclude, repo, mode, validation, shell)
+	if err != nil {
+		if writeErr := writeError(errorOutput, "deku: %v\n", err); writeErr != nil {
+			return 1
+		}
+		return 1
+	}
+	shell.SetRunner(runner)
+	shell.SetCommands(tuiCommandHandler(runner, providers))
+	shell.Append("deku: session " + conversation.ID + "\n")
+	if err := shell.Run(); err != nil {
+		if writeErr := writeError(errorOutput, "deku: %v\n", err); writeErr != nil {
+			return 1
+		}
+		return 1
+	}
+	return 0
+}
+
+// tuiCommandHandler adapts the command dispatch to the shell: the reply is
+// returned as text for the Transcript, and a /model switch reports the new
+// Selection so the status bar stays current.
+func tuiCommandHandler(runner *agent.Agent, providers *provider.Registry) tui.CommandHandler {
+	return func(line string) (string, string, string, error) {
+		reply, next, err := dispatchCommand(runner, providers, line)
+		if err != nil {
+			return "", "", "", err
+		}
+		if next != nil {
+			return reply, next.Provider, next.Model, nil
+		}
+		return reply, "", "", nil
+	}
+}
+
+// dispatchCommand runs one "/" line and returns the text to display and,
+// when the command changed the Selection, the new Selection. Both renderers
+// — the inline conversation loop and the terminal UI — share it so command
+// behavior cannot diverge between them.
+func dispatchCommand(runner *agent.Agent, providers *provider.Registry, line string) (string, *provider.Selection, error) {
 	fields := strings.Fields(line)
 	switch fields[0] {
 	case "/model":
 		switch len(fields) {
 		case 1:
-			return listSelectableModels(runner, providers, output)
-		case 3:
-			selection := provider.Selection{Provider: fields[1], Model: fields[2]}
-			if err := runner.SetSelection(selection); err != nil {
-				return err
+			var reply strings.Builder
+			selection := runner.Selection()
+			if _, err := fmt.Fprintf(&reply, "current selection: %s / %s\n", selection.Provider, selection.Model); err != nil {
+				return "", nil, err
 			}
-			_, err := fmt.Fprintf(output, "selection: %s / %s\n", selection.Provider, selection.Model)
-			return err
+			entries := providers.Authenticatable()
+			if len(entries) == 0 {
+				if _, err := io.WriteString(&reply, "no providers can authenticate; declare providers in models.json and credentials in auth.json\n"); err != nil {
+					return "", nil, err
+				}
+			} else {
+				for _, entry := range entries {
+					if _, err := fmt.Fprintf(&reply, "%s: %s\n", entry.Name, strings.Join(entry.Models, ", ")); err != nil {
+						return "", nil, err
+					}
+				}
+			}
+			return reply.String(), nil, nil
+		case 3:
+			next := provider.Selection{Provider: fields[1], Model: fields[2]}
+			if err := runner.SetSelection(next); err != nil {
+				return "", nil, err
+			}
+			return fmt.Sprintf("selection: %s / %s\n", next.Provider, next.Model), &next, nil
 		default:
-			return fmt.Errorf("usage: /model [provider model]")
+			return "", nil, fmt.Errorf("usage: /model [provider model]")
 		}
 	default:
-		return fmt.Errorf("unknown command %q", fields[0])
+		return "", nil, fmt.Errorf("unknown command %q", fields[0])
 	}
 }
 
-// listSelectableModels shows the current Selection and every Provider the
-// Agent can authenticate to with its Models, so Selection is only offered
-// from what works.
-func listSelectableModels(runner *agent.Agent, providers *provider.Registry, output io.Writer) error {
-	selection := runner.Selection()
-	if _, err := fmt.Fprintf(output, "current selection: %s / %s\n", selection.Provider, selection.Model); err != nil {
+// handleCommand dispatches lines beginning with "/" before they become
+// Turns, rendering the reply to the inline output. The /model command lists
+// the Providers the Agent can authenticate to, or — with a Provider and
+// Model argument — switches the active Selection for subsequent Turns and
+// records the override in the Session.
+func handleCommand(runner *agent.Agent, providers *provider.Registry, line string, output io.Writer) error {
+	reply, _, err := dispatchCommand(runner, providers, line)
+	if err != nil {
 		return err
 	}
-	entries := providers.Authenticatable()
-	if len(entries) == 0 {
-		_, err := io.WriteString(output, "no providers can authenticate; declare providers in models.json and credentials in auth.json\n")
-		return err
-	}
-	for _, entry := range entries {
-		if _, err := fmt.Fprintf(output, "%s: %s\n", entry.Name, strings.Join(entry.Models, ", ")); err != nil {
-			return err
-		}
-	}
-	return nil
+	_, err = io.WriteString(output, reply)
+	return err
 }
 
 // reportGitResult surfaces Validation outcomes and Git recoverability to the
