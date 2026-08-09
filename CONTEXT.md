@@ -255,7 +255,7 @@ The file changes a Turn introduces, surfaced to the user as they happen rather t
 
 ## Activity Stream
 
-The Agent-to-display stream of Working Indicator transitions and change events that Deku emits during a Turn. The Agent is the only module that knows current Turn state, so it is the sole source of the stream; any renderer (the v1 terminal UI in particular) consumes it to show a Working Indicator and a live Turn Diff. The stream is emitted by the Agent, never by the CLI or a Tool.
+The Agent-to-display stream of Working Indicator transitions, active-Tool reports, and change events that Deku emits during a Turn. The Agent reports the Tool it is about to execute at the moment execution begins, so a renderer's status bar can name the active Tool while the Working indicator is showing. The Agent is the only module that knows current Turn state, so it is the sole source of the stream; any renderer (the v1 terminal UI in particular) consumes it to show a Working Indicator and a live Turn Diff. The stream is emitted by the Agent, never by the CLI or a Tool.
 
 ---
 

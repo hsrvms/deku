@@ -134,6 +134,13 @@ func NewWithGit(p provider.Chat, model string, conversation *session.Session, ou
 // the caller changes the active Selection with SetSelection; the override is
 // recorded in the Session and restored on resume.
 func NewWithSelection(source SelectionSource, selection provider.Selection, conversation *session.Session, output io.Writer, input io.Reader, registry *tool.Registry, policy approval.Policy, exclude []string, repo *repository.Repo, mode repository.Mode, validation string) (*Agent, error) {
+	return NewWithSelectionAndActivity(source, selection, conversation, output, input, registry, policy, exclude, repo, mode, validation, nil)
+}
+
+// NewWithSelectionAndActivity is NewWithSelection with an activity Sink, for
+// renderers that consume the Activity Stream while Selection stays runtime-
+// switchable — the terminal UI in particular.
+func NewWithSelectionAndActivity(source SelectionSource, selection provider.Selection, conversation *session.Session, output io.Writer, input io.Reader, registry *tool.Registry, policy approval.Policy, exclude []string, repo *repository.Repo, mode repository.Mode, validation string, sink activity.Sink) (*Agent, error) {
 	if source == nil {
 		return nil, errors.New("selection source is required")
 	}
@@ -141,7 +148,7 @@ func NewWithSelection(source SelectionSource, selection provider.Selection, conv
 	if err != nil {
 		return nil, err
 	}
-	agent := newAgent(adapter, selection.Model, conversation, output, input, registry, policy, nil, nil, exclude, repo, mode, validation, nil)
+	agent := newAgent(adapter, selection.Model, conversation, output, input, registry, policy, nil, nil, exclude, repo, mode, validation, sink)
 	agent.source = source
 	agent.selection = selection
 	return agent, nil
@@ -443,6 +450,7 @@ func (a *Agent) runTool(ctx context.Context, call provider.ToolCall) (string, er
 		return fmt.Sprintf("The user rejected the %s tool call; it did not execute.", call.Name), nil
 	}
 	a.sink.Indicator(activity.Working)
+	a.sink.ActiveTool(call.Name)
 	before := a.tools.ChangeCount()
 	content, toolErr := a.tools.Execute(ctx, call.Name, call.Arguments)
 	if toolErr != nil {

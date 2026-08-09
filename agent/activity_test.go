@@ -20,10 +20,12 @@ import (
 // order so a test can assert a deterministic indicator-and-change sequence.
 type recordingSink struct {
 	indicators []activity.Indicator
+	tools      []string
 	changes    []activity.Change
 }
 
 func (s *recordingSink) Indicator(i activity.Indicator) { s.indicators = append(s.indicators, i) }
+func (s *recordingSink) ActiveTool(name string)         { s.tools = append(s.tools, name) }
 func (s *recordingSink) Change(c activity.Change)       { s.changes = append(s.changes, c) }
 
 func newActivityAgent(t *testing.T, root string, providerStub provider.Chat, input string, sink activity.Sink) (*Agent, *session.Session) {
@@ -80,6 +82,10 @@ func TestAgentEmitsDeterministicActivityStreamForWriteTurn(t *testing.T) {
 	if !reflect.DeepEqual(sink.changes, wantChanges) {
 		t.Errorf("changes = %#v, want %#v", sink.changes, wantChanges)
 	}
+	wantTools := []string{"write"}
+	if !reflect.DeepEqual(sink.tools, wantTools) {
+		t.Errorf("active tools = %#v, want %#v", sink.tools, wantTools)
+	}
 }
 
 func TestAgentEmitsWorkingStreamWithoutChangeForReadTool(t *testing.T) {
@@ -115,6 +121,10 @@ func TestAgentEmitsWorkingStreamWithoutChangeForReadTool(t *testing.T) {
 	if len(sink.changes) != 0 {
 		t.Errorf("changes = %#v, want none for a read tool", sink.changes)
 	}
+	wantTools := []string{"read"}
+	if !reflect.DeepEqual(sink.tools, wantTools) {
+		t.Errorf("active tools = %#v, want %#v", sink.tools, wantTools)
+	}
 }
 
 func TestAgentEmitsAwaitingApprovalWithoutWorkingForRejectedTool(t *testing.T) {
@@ -142,6 +152,9 @@ func TestAgentEmitsAwaitingApprovalWithoutWorkingForRejectedTool(t *testing.T) {
 	}
 	if len(sink.changes) != 0 {
 		t.Errorf("changes = %#v, want none for a rejected tool", sink.changes)
+	}
+	if len(sink.tools) != 0 {
+		t.Errorf("active tools = %#v, want none for a rejected tool", sink.tools)
 	}
 }
 
@@ -171,6 +184,10 @@ func TestAgentEmitsChangeEventForEachEditAndWrite(t *testing.T) {
 	if !reflect.DeepEqual(sink.changes, wantChanges) {
 		t.Errorf("changes = %#v, want %#v", sink.changes, wantChanges)
 	}
+	wantTools := []string{"edit", "write"}
+	if !reflect.DeepEqual(sink.tools, wantTools) {
+		t.Errorf("active tools = %#v, want %#v", sink.tools, wantTools)
+	}
 }
 
 func TestAgentEmitsChangeEventForEveryEditToSamePath(t *testing.T) {
@@ -198,5 +215,9 @@ func TestAgentEmitsChangeEventForEveryEditToSamePath(t *testing.T) {
 	}
 	if !reflect.DeepEqual(sink.changes, wantChanges) {
 		t.Errorf("changes = %#v, want one change event per edit to the same path", sink.changes)
+	}
+	wantTools := []string{"edit", "edit"}
+	if !reflect.DeepEqual(sink.tools, wantTools) {
+		t.Errorf("active tools = %#v, want one per executed edit", sink.tools)
 	}
 }
