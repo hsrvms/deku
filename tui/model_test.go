@@ -700,7 +700,7 @@ func TestProgramLoopStreamsRealAgentTurnEndToEnd(t *testing.T) {
 	m.SetRunner(runner)
 
 	keys := &phasedReader{
-		phases: [][]byte{[]byte("hello world\r"), []byte{4}}, // Ctrl+D quits
+		phases: [][]byte{[]byte("hello world\r"), {4}}, // Ctrl+D quits
 		gates:  []chan struct{}{nil, make(chan struct{})},
 	}
 	var frames syncBuffer
@@ -766,7 +766,7 @@ func TestProgramLoopTypedApprovalDecisionEndToEnd(t *testing.T) {
 	// Phase 0 submits the request; phase 1 types the Approval decision once
 	// the prompt is visible; phase 2 quits after the Turn completes.
 	keys := &phasedReader{
-		phases: [][]byte{[]byte("create notes\r"), []byte("y\r"), []byte{4}},
+		phases: [][]byte{[]byte("create notes\r"), []byte("y\r"), {4}},
 		gates:  []chan struct{}{nil, make(chan struct{}), make(chan struct{})},
 	}
 	var frames syncBuffer
