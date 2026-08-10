@@ -66,7 +66,7 @@ func indicatorStyle(i activity.Indicator) (glyph, label string, color lipgloss.C
 // state is reported by the Agent, never inferred by the shell.
 func (m *Model) statusBar() string {
 	m.mu.Lock()
-	indicator, activeTool := m.indicator, m.activeTool
+	indicator, activeTool, provider, model := m.indicator, m.activeTool, m.provider, m.model
 	m.mu.Unlock()
 	parts := make([]string, 0, 3)
 	if indicator != "" {
@@ -76,12 +76,30 @@ func (m *Model) statusBar() string {
 	if activeTool != "" {
 		parts = append(parts, "tool: "+activeTool)
 	}
-	parts = append(parts, m.provider+"/"+m.model)
+	parts = append(parts, provider+"/"+model)
 	return strings.Join(parts, " · ")
 }
 
-// inputLine renders the single-line input with its prompt and cursor.
+// inputLine renders the single-line input with its prompt and cursor. While
+// the Palette is open the line is the Palette's filter; while the Agent
+// awaits an Approval decision it is the Command Report prompt with the
+// available decisions, so Approval renders in the input area with the status
+// bar showing awaiting Approval (design guide §3). In normal mode the prompt
+// carries a [normal] tag, so the mode is never conveyed by color alone.
 func (m *Model) inputLine() string {
-	prompt := lipgloss.NewStyle().Foreground(palette.prompt).Render("> ")
-	return prompt + m.input.render()
+	if m.view == viewPalette {
+		prompt := lipgloss.NewStyle().Foreground(palette.prompt).Render("filter: ")
+		return prompt + string(m.palette.filter) + "█"
+	}
+	m.mu.Lock()
+	awaiting := m.indicator == activity.AwaitingApproval
+	m.mu.Unlock()
+	prompt, color := "> ", palette.prompt
+	if awaiting {
+		prompt, color = "Approve? [y/n] ", palette.awaiting
+	}
+	if m.input.mode == inputNormal {
+		prompt = "[normal] " + prompt
+	}
+	return lipgloss.NewStyle().Foreground(color).Render(prompt) + m.input.render()
 }

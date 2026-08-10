@@ -85,13 +85,15 @@ func ruleLines(view string) int {
 }
 
 // completeTurn runs a pending Turn command (the tea.Cmd returned by Enter)
-// and feeds its message to the model, as the program loop would.
-func completeTurn(t *testing.T, m *Model, cmd tea.Cmd) {
+// and feeds its message to the model, as the program loop would. It returns
+// the next Turn command the shell started, if any (a queued Turn).
+func completeTurn(t *testing.T, m *Model, cmd tea.Cmd) tea.Cmd {
 	t.Helper()
 	if cmd == nil {
 		t.Fatal("expected a Turn command, got nil")
 	}
-	m.Update(cmd())
+	_, next := m.Update(cmd())
+	return next
 }
 
 func TestActive(t *testing.T) {
@@ -334,7 +336,7 @@ func TestChangeEventsAreRecordedInStreamOrder(t *testing.T) {
 	}
 }
 
-func TestEnterWhileTurnRunsDoesNotStartAnother(t *testing.T) {
+func TestQueuedMessagesDoNotInterleaveWithRunningTurn(t *testing.T) {
 	runner := &stubRunner{}
 	m := newTestModel(io.Discard)
 	m.SetRunner(runner)
@@ -344,13 +346,13 @@ func TestEnterWhileTurnRunsDoesNotStartAnother(t *testing.T) {
 	_ = cmd // Turn stays pending for the whole test
 
 	typeText(m, "second")
-	_, cmd = m.Update(enterKey())
-	if cmd != nil {
-		t.Fatal("Enter while a Turn runs must not start another Turn")
+	_, queued := m.Update(enterKey())
+	if queued != nil {
+		t.Fatal("Enter while a Turn runs must queue, not start another Turn")
 	}
-	// Typing still works: the line keeps the text (queuing arrives later).
-	if view := m.View(); !strings.Contains(view, "second") {
-		t.Errorf("typed text must remain in the input line, got %q", view)
+	// The queued message is committed: the input line is free again.
+	if got := inputLineText(m); got != "> █" {
+		t.Errorf("the input line must be free after queueing, got %q", got)
 	}
 }
 
@@ -427,16 +429,10 @@ func TestUnknownCommandWithoutHandlerIsReported(t *testing.T) {
 	}
 }
 
-func TestCtrlCAndCtrlDQuit(t *testing.T) {
-	for _, key := range []tea.Msg{ctrlC(), ctrlD()} {
-		m := newTestModel(io.Discard)
-		_, cmd := m.Update(key)
-		if cmd == nil {
-			t.Fatalf("key %v must quit the program", key)
-		}
-		if msg := cmd(); msg != tea.Quit() {
-			t.Errorf("key %v: cmd() = %#v, want the quit message", key, msg)
-		}
+func TestCtrlCNoLongerQuits(t *testing.T) {
+	m := newTestModel(io.Discard)
+	if _, cmd := m.Update(ctrlC()); cmd != nil {
+		t.Fatal("Ctrl+C must interrupt or clear, never quit")
 	}
 }
 
@@ -649,28 +645,25 @@ func (s *syncBuffer) String() string {
 	return s.b.String()
 }
 
-// gatedReader feeds keys in two phases: the request first, then — once the
-// test has observed the streamed response — the Ctrl+C that quits, so the
-// program loop is exercised end to end without timing races.
-type gatedReader struct {
-	first   []byte
-	second  []byte
-	release chan struct{}
-	phase   int
+// phasedReader feeds key phases in order, gating each phase until the test
+// has observed the program state that phase answers, so the program loop is
+// exercised end to end without timing races. A nil gate delivers immediately.
+type phasedReader struct {
+	phases [][]byte
+	gates  []chan struct{}
+	phase  int
 }
 
-func (g *gatedReader) Read(p []byte) (int, error) {
-	switch g.phase {
-	case 0:
-		g.phase = 1
-		return copy(p, g.first), nil
-	case 1:
-		<-g.release
-		g.phase = 2
-		return copy(p, g.second), nil
-	default:
+func (p *phasedReader) Read(buf []byte) (int, error) {
+	if p.phase >= len(p.phases) {
 		return 0, io.EOF
 	}
+	if gate := p.gates[p.phase]; gate != nil {
+		<-gate
+	}
+	data := p.phases[p.phase]
+	p.phase++
+	return copy(buf, data), nil
 }
 
 // TestProgramLoopStreamsRealAgentTurnEndToEnd runs the actual bubbletea
@@ -706,10 +699,9 @@ func TestProgramLoopStreamsRealAgentTurnEndToEnd(t *testing.T) {
 	}
 	m.SetRunner(runner)
 
-	keys := &gatedReader{
-		first:   []byte("hello world\r"),
-		second:  []byte{3}, // Ctrl+C quits
-		release: make(chan struct{}),
+	keys := &phasedReader{
+		phases: [][]byte{[]byte("hello world\r"), {4}}, // Ctrl+D quits
+		gates:  []chan struct{}{nil, make(chan struct{})},
 	}
 	var frames syncBuffer
 	done := make(chan error, 1)
@@ -722,7 +714,7 @@ func TestProgramLoopStreamsRealAgentTurnEndToEnd(t *testing.T) {
 		}
 		time.Sleep(5 * time.Millisecond)
 	}
-	close(keys.release)
+	close(keys.gates[1])
 
 	// The request echo and the status bar must be in the frames.
 	if !strings.Contains(frames.String(), "hello world") {
@@ -737,6 +729,74 @@ func TestProgramLoopStreamsRealAgentTurnEndToEnd(t *testing.T) {
 	messages := conversation.Messages
 	if len(messages) != 2 || messages[0].Role != session.RoleUser || messages[1].Role != session.RoleAssistant {
 		t.Errorf("session messages = %#v, want user then assistant", messages)
+	}
+}
+
+// TestProgramLoopTypedApprovalDecisionEndToEnd runs the actual bubbletea
+// program loop with a real Agent and a gated Tool Call, typing the Approval
+// decision into the input line: the prompt renders in the input area, the
+// typed decision reaches the waiting gate through the pipe, the approved
+// write executes, and the Turn completes to idle.
+func TestProgramLoopTypedApprovalDecisionEndToEnd(t *testing.T) {
+	root := t.TempDir()
+	registry, err := tool.NewRegistry(root)
+	if err != nil {
+		t.Fatalf("NewRegistry() error = %v", err)
+	}
+	store, err := session.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewStore() error = %v", err)
+	}
+	conversation, err := store.Create()
+	if err != nil {
+		t.Fatalf("Create() error = %v", err)
+	}
+	providerStub := &scriptedProvider{
+		responses: [][]provider.Event{
+			{provider.ToolCall{ID: "call-1", Name: "write", Arguments: `{"path":"notes.txt","content":"hello\n"}`}, provider.Done{}},
+			{provider.TextDelta{Text: "Created notes.txt."}, provider.Done{}},
+		},
+	}
+	approvalReader, approvalWriter := io.Pipe()
+	defer func() { _ = approvalReader.Close() }()
+	m := New("tokenrouter", "qwen-2.5-coder", approvalWriter)
+	runner := agent.NewWithActivity(providerStub, "qwen-2.5-coder", conversation, m, approvalReader, registry, approval.DefaultPolicy(), nil, m)
+	m.SetRunner(runner)
+
+	// Phase 0 submits the request; phase 1 types the Approval decision once
+	// the prompt is visible; phase 2 quits after the Turn completes.
+	keys := &phasedReader{
+		phases: [][]byte{[]byte("create notes\r"), []byte("y\r"), {4}},
+		gates:  []chan struct{}{nil, make(chan struct{}), make(chan struct{})},
+	}
+	var frames syncBuffer
+	done := make(chan error, 1)
+	go func() { done <- m.RunWith(tea.WithInput(keys), tea.WithOutput(&frames)) }()
+
+	deadline := time.Now().Add(5 * time.Second)
+	for !strings.Contains(frames.String(), "Approve? [y/n]") {
+		if time.Now().After(deadline) {
+			t.Fatal("timed out waiting for the Approval prompt in the frames")
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	close(keys.gates[1])
+	for !strings.Contains(frames.String(), "● idle") {
+		if time.Now().After(deadline) {
+			t.Fatal("timed out waiting for the idle indicator after the Turn")
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	close(keys.gates[2])
+	if err := <-done; err != nil {
+		t.Fatalf("program: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(root, "notes.txt")); err != nil {
+		t.Fatalf("the typed Approval decision did not let the write execute: %v", err)
+	}
+	messages := conversation.Messages
+	if len(messages) != 4 || messages[3].Role != session.RoleAssistant {
+		t.Errorf("session messages = %#v, want user, assistant, tool result, assistant", messages)
 	}
 }
 

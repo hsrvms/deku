@@ -57,22 +57,25 @@ never move.
 
 Rules (fixed):
 
-1. **Discoverability:** `?` opens the keybinding help overlay from any mode; every binding is listed there.
+1. **Discoverability:** `?` opens the keybinding help overlay (a normal-mode key — insert mode never traps a typeable character, rule 3); every binding is listed there.
 2. **Vim orientation:** input editing follows vim normal/insert semantics.
 3. **Modeless safety:** no binding may be a character that can be typed in insert mode. Bindings are normal-mode keys or `Ctrl` chords only.
-4. **Stable reserved set:** `Enter`, `Ctrl+C`, `Ctrl+P` are reserved and documented; the remaining table is provisional until the v1 specification ratifies it.
+4. **Stable reserved set:** `Enter`, `Ctrl+C`, `Ctrl+P` are reserved and documented; the table below is ratified by the v1 specification.
 
 | Binding | Mode | Action |
 |---|---|---|
 | `Enter` | any | submit input; queue as next Turn while one runs |
 | `Ctrl+C` | any | interrupt the running Turn; clear input when idle |
 | `Ctrl+P` | any | open the Palette (roadmap-mandated shortcut) |
-| `?` | any | keybinding help overlay |
+| `?` | normal | keybinding help overlay |
 | `Ctrl+E` / `Ctrl+Y` | any | scroll Transcript down / up (vim-native scroll, works while typing) |
-| `Ctrl+T` | any | toggle Turn Diff pane *(provisional — free chord, no insert-mode collision)* |
+| `Ctrl+T` | any | toggle Turn Diff pane |
+| `Ctrl+D` | any | quit the program (the inline path's EOF) |
 | `Esc` / `i` / `a` / `A` / `I` | input | enter / leave insert mode |
 | `h` `l` `0` `$` `w` `b` `x` `dd` | normal | vim movement and editing on the single-line input |
 | `j` / `k` | normal | command history (shell-vi convention) |
+
+The table is ratified by the v1 specification (`docs/specs/2026-08-09-v1-repository-intelligence-extension-delivery.md`), which resolves the `?` binding as a normal-mode key so that typing in insert mode never triggers it.
 
 ## 6. Color and accessibility baseline
 
