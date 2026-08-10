@@ -297,6 +297,7 @@ func runTUI(providers *provider.Registry, selection provider.Selection, conversa
 	}
 	shell.SetRunner(runner)
 	shell.SetCommands(tuiCommandHandler(runner, providers))
+	shell.SetPalette(paletteEntries(providers.Authenticatable()))
 	shell.Append("deku: session " + conversation.ID + "\n")
 	if err := shell.Run(); err != nil {
 		if writeErr := writeError(errorOutput, "deku: %v\n", err); writeErr != nil {
@@ -305,6 +306,20 @@ func runTUI(providers *provider.Registry, selection provider.Selection, conversa
 		return 1
 	}
 	return 0
+}
+
+// paletteEntries flattens the authenticatable Providers into the Palette's
+// Model list in display order — Provider name order, each Provider's Models
+// in declared order — matching the /model Command's listing, so the Palette
+// can only offer Selections that resolve.
+func paletteEntries(providers []provider.Provider) []tui.PaletteEntry {
+	var entries []tui.PaletteEntry
+	for _, p := range providers {
+		for _, model := range p.Models {
+			entries = append(entries, tui.PaletteEntry{Provider: p.Name, Model: model})
+		}
+	}
+	return entries
 }
 
 // tuiCommandHandler adapts the command dispatch to the shell: the reply is

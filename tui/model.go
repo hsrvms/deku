@@ -2,6 +2,7 @@ package tui
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"strings"
@@ -28,6 +29,18 @@ type CommandHandler func(line string) (reply string, provider, model string, err
 
 // wheelScrollLines is how many Transcript lines one mouse-wheel tick scrolls.
 const wheelScrollLines = 3
+
+// view is which surface the main area shows. Panes are views, not focus
+// targets: the Palette and the help overlay replace the Transcript view
+// while the status bar and the input line never move (design guide §3).
+type view int
+
+// Main-area views.
+const (
+	viewTranscript view = iota
+	viewPalette
+	viewHelp
+)
 
 // Model is the bubbletea application model for the terminal UI. It is also
 // the in-memory activity Sink and the Agent's output Writer: the Agent
@@ -73,6 +86,22 @@ type Model struct {
 	height     int
 	input      input
 	turnActive bool
+
+	// queue holds messages submitted with Enter while a Turn runs; each
+	// runs as the next Turn when the current one completes, in order
+	// (modeless input: typing always works).
+	queue []string
+
+	// turnCancel cancels the running Turn's context (Ctrl+C interrupts).
+	turnCancel context.CancelFunc
+
+	// view is the main-area surface: the Transcript, the model Palette, or
+	// the keybinding help overlay.
+	view view
+
+	// palette is the model Palette: the filterable, grouped Model list with
+	// the current Selection marked (Ctrl+P).
+	palette paletteList
 }
 
 // New constructs the terminal UI model. provider and model name the current
@@ -115,6 +144,13 @@ func (m *Model) RunWith(options ...tea.ProgramOption) error {
 // Model as its output Writer and activity Sink, so it can only be attached
 // after New.
 func (m *Model) SetRunner(runner Runner) { m.runner = runner }
+
+// SetPalette installs the Palette's Models in display order — Provider name
+// order, each Provider's Models in declared order — as the /model Command
+// lists them. It is attached after New like the runner and commands.
+func (m *Model) SetPalette(entries []PaletteEntry) {
+	m.palette = *newPalette(entries)
+}
 
 // SetCommands installs the "/" line dispatch (the CLI's command handling).
 func (m *Model) SetCommands(handler CommandHandler) { m.commands = handler }
@@ -304,31 +340,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.refreshTranscriptLocked()
 		m.mu.Unlock()
 	case tea.KeyMsg:
-		switch msg.Type {
-		case tea.KeyCtrlC, tea.KeyCtrlD:
-			return m, tea.Quit
-		case tea.KeyEnter:
-			return m, m.submit()
-		case tea.KeyCtrlT:
-			m.toggleDiff()
-		case tea.KeyPgUp:
-			m.scrollUp(m.paneHeight())
-		case tea.KeyPgDown:
-			m.scrollDown(m.paneHeight())
-		case tea.KeyBackspace:
-			m.input.backspace()
-		case tea.KeyLeft:
-			m.input.left()
-		case tea.KeyRight:
-			m.input.right()
-		case tea.KeyRunes:
-			for _, r := range msg.Runes {
-				m.input.insert(r)
-			}
-		case tea.KeySpace:
-			// tea parses a standalone space as KeySpace, not KeyRunes.
-			m.input.insert(' ')
-		}
+		return m, m.handleKey(msg)
 	case tea.MouseMsg:
 		switch msg.Button {
 		case tea.MouseButtonWheelUp:
@@ -337,28 +349,231 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.scrollDown(wheelScrollLines)
 		}
 	case turnResultMsg:
-		m.mu.Lock()
-		m.turnActive = false
-		m.mu.Unlock()
-		if msg.err != nil {
-			m.Append("deku: " + msg.err.Error() + "\n")
-		} else if report := formatResult(msg.result); report != "" {
-			m.Append(report)
-		}
+		return m, m.finishTurn(msg)
 	}
 	return m, nil
 }
 
+// handleKey dispatches one key: the global chords first — they work from
+// every view and input mode — then the transcript-view input keys. The input
+// line stays the only focused surface: typing always edits the line.
+func (m *Model) handleKey(msg tea.KeyMsg) tea.Cmd {
+	switch msg.Type {
+	case tea.KeyCtrlC:
+		m.interruptOrClear()
+	case tea.KeyCtrlD:
+		return tea.Quit
+	case tea.KeyCtrlP:
+		m.openPalette()
+	case tea.KeyCtrlE:
+		m.scrollDown(1)
+	case tea.KeyCtrlY:
+		m.scrollUp(1)
+	case tea.KeyCtrlT:
+		m.toggleDiff()
+	}
+	switch m.view {
+	case viewPalette:
+		return m.paletteKey(msg)
+	case viewHelp:
+		if m.helpKey(msg) {
+			return nil
+		}
+	}
+	return m.inputKey(msg)
+}
+
+// interruptOrClear implements the ratified Ctrl+C: interrupt the running
+// Turn by canceling its context — the Agent exits with a cancellation error
+// the shell reports as an interruption — or clear the input line when idle.
+func (m *Model) interruptOrClear() {
+	m.mu.Lock()
+	running := m.turnActive
+	cancel := m.turnCancel
+	m.mu.Unlock()
+	if running && cancel != nil {
+		cancel()
+		return
+	}
+	m.input.clear()
+}
+
+// inputKey handles the transcript-view keys: vim normal/insert editing on
+// the single-line input, command history, and Transcript scrolling.
+func (m *Model) inputKey(msg tea.KeyMsg) tea.Cmd {
+	switch msg.Type {
+	case tea.KeyEnter:
+		return m.submit()
+	case tea.KeyPgUp:
+		m.scrollUp(m.paneHeight())
+	case tea.KeyPgDown:
+		m.scrollDown(m.paneHeight())
+	case tea.KeyEsc:
+		m.input.normalMode()
+	case tea.KeyBackspace:
+		if m.input.mode == inputNormal {
+			m.input.left()
+		} else {
+			m.input.backspace()
+		}
+	case tea.KeyLeft:
+		m.input.left()
+	case tea.KeyRight:
+		m.input.right()
+	case tea.KeyUp:
+		m.input.historyOlder()
+	case tea.KeyDown:
+		m.input.historyNewer()
+	case tea.KeyRunes:
+		if m.input.mode == inputNormal {
+			m.normalKey(msg.Runes)
+		} else {
+			for _, r := range msg.Runes {
+				m.input.insert(r)
+			}
+		}
+	case tea.KeySpace:
+		// tea parses a standalone space as KeySpace, not KeyRunes.
+		if m.input.mode == inputInsert {
+			m.input.insert(' ')
+		}
+	}
+	return nil
+}
+
+// normalKey dispatches one normal-mode key: the vim editing bindings from
+// the ratified keybinding table. Any other character is ignored, so typing
+// in normal mode never edits the line.
+func (m *Model) normalKey(runes []rune) {
+	if len(runes) != 1 {
+		return
+	}
+	// Any key other than d cancels an armed dd, like an operator waiting
+	// for its motion in vim.
+	if runes[0] != 'd' {
+		m.input.cancelDD()
+	}
+	switch runes[0] {
+	case 'i':
+		m.input.insertMode()
+	case 'a':
+		m.input.appendMode()
+	case 'A':
+		m.input.appendEndMode()
+	case 'I':
+		m.input.insertStartMode()
+	case 'h':
+		m.input.left()
+	case 'l':
+		m.input.right()
+	case '0':
+		m.input.home()
+	case '$':
+		m.input.end()
+	case 'w':
+		m.input.nextWord()
+	case 'b':
+		m.input.prevWord()
+	case 'x':
+		m.input.deleteChar()
+	case 'd':
+		m.input.deleteLineKey()
+	case 'j':
+		m.input.historyNewer()
+	case 'k':
+		m.input.historyOlder()
+	case '?':
+		m.openHelp()
+	}
+}
+
+// openHelp opens the keybinding help overlay (? in normal mode). The help
+// binding is a normal-mode key: insert mode must never trap a typeable
+// character, so ? types in insert mode and opens the overlay in normal mode.
+func (m *Model) openHelp() { m.view = viewHelp }
+
+// openPalette opens the model Palette view (Ctrl+P): a fresh filter and the
+// cursor on the first Model. The Palette is a view over the main area; the
+// status bar and the input line stay in place.
+func (m *Model) openPalette() {
+	m.palette.filter = m.palette.filter[:0]
+	m.palette.cursor = 0
+	m.view = viewPalette
+}
+
+// paletteKey handles keys while the Palette view is open: Esc closes it,
+// Enter applies the highlighted Model's Selection override through the same
+// command path as /model, ↑/↓ move, and printable characters filter. The
+// filter uses the arrow keys for movement because j/k are filter characters.
+func (m *Model) paletteKey(msg tea.KeyMsg) tea.Cmd {
+	switch msg.Type {
+	case tea.KeyEsc:
+		m.view = viewTranscript
+	case tea.KeyEnter:
+		if entry, ok := m.palette.choice(); ok {
+			m.view = viewTranscript
+			return m.applyPaletteChoice(entry)
+		}
+	case tea.KeyUp:
+		m.palette.move(-1)
+	case tea.KeyDown:
+		m.palette.move(1)
+	case tea.KeyBackspace:
+		m.palette.backspace()
+	case tea.KeyRunes:
+		for _, r := range msg.Runes {
+			m.palette.typeRune(r)
+		}
+	case tea.KeySpace:
+		// tea parses a standalone space as KeySpace, not KeyRunes.
+		m.palette.typeRune(' ')
+	}
+	return nil
+}
+
+// applyPaletteChoice runs the /model Command for the chosen entry as a tea
+// command, so the per-Session Selection override is set exactly like the
+// typed command — same resolution, same Session recording, same reply —
+// while the program loop never blocks on the Agent's Selection lock during a
+// running Turn.
+func (m *Model) applyPaletteChoice(entry PaletteEntry) tea.Cmd {
+	return func() tea.Msg {
+		m.dispatchCommand("/model " + entry.Provider + " " + entry.Model)
+		return nil
+	}
+}
+
+// helpKey handles keys while the help overlay is open: Esc, Enter, or ?
+// close it; everything else keeps editing the input line underneath, so the
+// modeless input stays active.
+func (m *Model) helpKey(msg tea.KeyMsg) bool {
+	switch msg.Type {
+	case tea.KeyEsc, tea.KeyEnter:
+		m.view = viewTranscript
+		return true
+	case tea.KeyRunes:
+		if len(msg.Runes) == 1 && msg.Runes[0] == '?' {
+			m.view = viewTranscript
+			return true
+		}
+	}
+	return false
+}
+
 // submit handles Enter. A pending Approval decision is routed to the
 // Approval gate as a line; an idle shell starts a Turn (a "/" line goes to
-// the command handler instead); a running Turn is left alone — queuing
-// arrives with the modeless-input ticket (#64), not here.
+// the command handler instead); a running Turn queues the message as the
+// next Turn, so Enter always accepts the line while the Agent works.
 func (m *Model) submit() tea.Cmd {
 	m.mu.Lock()
 	awaitingApproval := m.indicator == activity.AwaitingApproval
+	running := m.turnActive
 	m.mu.Unlock()
-	if awaitingApproval && m.turnActive {
+	if awaitingApproval && running {
 		decision := m.input.take()
+		if decision == "" {
+			return nil
+		}
 		if m.approval != nil {
 			if _, err := io.WriteString(m.approval, decision+"\n"); err != nil {
 				m.Append(fmt.Sprintf("deku: deliver approval decision: %v\n", err))
@@ -366,13 +581,11 @@ func (m *Model) submit() tea.Cmd {
 		}
 		return nil
 	}
-	if m.turnActive {
-		return nil
-	}
 	request := m.input.take()
 	if request == "" {
 		return nil
 	}
+	m.input.remember(request)
 	if strings.HasPrefix(request, "/") {
 		m.dispatchCommand(request)
 		return nil
@@ -382,10 +595,21 @@ func (m *Model) submit() tea.Cmd {
 		return nil
 	}
 	m.appendEntry(msgUser, request)
+	if running {
+		m.mu.Lock()
+		m.queue = append(m.queue, request)
+		m.mu.Unlock()
+		return nil
+	}
+	return m.startTurn(request)
+}
+
+// startTurn starts a Turn for request: a fresh Turn Diff (the completed
+// Turn's block stays in the Transcript as history; the new one re-opens on
+// its first Change), a cancelable context (Ctrl+C interrupts this Turn), and
+// the runner command whose result the shell handles when the Turn completes.
+func (m *Model) startTurn(request string) tea.Cmd {
 	m.mu.Lock()
-	// A new Turn starts a fresh Turn Diff: the block re-opens on the new
-	// Turn's first Change, while the completed Turn's block stays in the
-	// Transcript as its history.
 	m.turnDiffPaths = make(map[string]bool)
 	m.diffOrder = nil
 	m.diffCache = nil
@@ -394,12 +618,43 @@ func (m *Model) submit() tea.Cmd {
 	m.diffOpen = false
 	m.diffEntryIdx = -1
 	m.turnActive = true
-	m.refreshTranscriptLocked()
+	ctx, cancel := context.WithCancel(context.Background())
+	m.turnCancel = cancel
 	m.mu.Unlock()
 	return func() tea.Msg {
-		result, err := m.runner.Turn(context.Background(), request)
+		result, err := m.runner.Turn(ctx, request)
 		return turnResultMsg{result: result, err: err}
 	}
+}
+
+// finishTurn releases a completed Turn — reporting its Git outcomes, or the
+// interruption when its context was canceled — and starts the next queued
+// Turn, so messages queued with Enter while a Turn runs execute in order.
+func (m *Model) finishTurn(msg turnResultMsg) tea.Cmd {
+	m.mu.Lock()
+	m.turnActive = false
+	m.turnCancel = nil
+	m.mu.Unlock()
+	if msg.err != nil {
+		if errors.Is(msg.err, context.Canceled) {
+			m.Append("deku: turn interrupted\n")
+		} else {
+			m.Append("deku: " + msg.err.Error() + "\n")
+		}
+	} else if report := formatResult(msg.result); report != "" {
+		m.Append(report)
+	}
+	m.mu.Lock()
+	var next string
+	if len(m.queue) > 0 {
+		next = m.queue[0]
+		m.queue = m.queue[1:]
+	}
+	m.mu.Unlock()
+	if next == "" {
+		return nil
+	}
+	return m.startTurn(next)
 }
 
 // dispatchCommand runs a "/" line through the command handler and renders
@@ -415,7 +670,9 @@ func (m *Model) dispatchCommand(line string) {
 		return
 	}
 	if provider != "" && model != "" {
+		m.mu.Lock()
 		m.provider, m.model = provider, model
+		m.mu.Unlock()
 	}
 	if reply != "" {
 		if !strings.HasSuffix(reply, "\n") {
@@ -495,7 +752,8 @@ func (m *Model) scrollDown(lines int) {
 
 // View implements tea.Model: the Transcript pane — which hosts the Turn Diff
 // block inside the Agent's response section — the status bar, and the input
-// line. The layout never changes when the block appears.
+// line. The layout never changes when the block appears; the Palette and the
+// help overlay replace the Transcript view in place.
 func (m *Model) View() string {
 	width, _ := m.size()
 	m.refreshDiff()
@@ -510,11 +768,14 @@ func (m *Model) View() string {
 		m.viewport.YOffset = vp.YOffset
 		m.mu.Unlock()
 	}
-	return strings.Join([]string{
-		vp.View(),
-		m.statusBar(),
-		m.inputLine(),
-	}, "\n")
+	main := vp.View()
+	switch m.view {
+	case viewPalette:
+		main = m.palette.render(m.paneHeight(), m.provider, m.model)
+	case viewHelp:
+		main = renderHelp(m.paneHeight())
+	}
+	return strings.Join([]string{main, m.statusBar(), m.inputLine()}, "\n")
 }
 
 // paneHeight is the Transcript pane's height: the window minus the status
