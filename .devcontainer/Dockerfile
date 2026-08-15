@@ -1,7 +1,7 @@
 # syntax=docker/dockerfile:1.7
 
 # Keep runtime versions explicit so upgrades are reviewable and cached independently.
-ARG GO_IMAGE=golang:1.26.5-trixie
+ARG GO_IMAGE=golang:1.26.6-trixie
 ARG NODE_IMAGE=node:24.18.0-trixie-slim
 ARG DEBIAN_IMAGE=debian:trixie-slim
 
