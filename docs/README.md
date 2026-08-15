@@ -8,6 +8,7 @@ This directory contains the canonical project documentation.
 - [Roadmap](roadmap.md) — current product horizon; roadmap items are not implementation commitments.
 - [Specifications](specs/README.md) — accepted release and feature requirements.
 - [Architecture decisions](adr/) — durable decisions and their trade-offs.
+- [System prompt instruction files](guides/instruction-files.md) — the always-on instruction files and how they compose.
 - [Release runbook](reference/release-runbook.md) — maintainer procedure for publishing, withdrawing, and revoking Releases.
 
 ## Documentation lifecycle

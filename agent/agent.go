@@ -80,6 +80,7 @@ type Agent struct {
 	initialized   bool
 	stashRef      string
 	sink          activity.Sink
+	instructions  *prompt.Instructions
 
 	turnMu sync.Mutex
 }
@@ -93,13 +94,13 @@ var _ Runner = (*Agent)(nil)
 // standard input.
 func New(p provider.Chat, model string, conversation *session.Session, output io.Writer, input io.Reader) *Agent {
 	registry, err := tool.NewRegistry(".")
-	return newAgent(p, model, conversation, output, input, registry, approval.DefaultPolicy(), nil, err, nil, nil, repository.ModeOff, "", nil)
+	return newAgent(p, model, conversation, output, input, registry, approval.DefaultPolicy(), nil, err, nil, nil, repository.ModeOff, "", nil, nil)
 }
 
 // NewWithTools constructs an Agent with an explicit Tool registry. This is the
 // test and embedding seam for choosing the repository being explored.
 func NewWithTools(p provider.Chat, model string, conversation *session.Session, output io.Writer, input io.Reader, registry *tool.Registry) *Agent {
-	return newAgent(p, model, conversation, output, input, registry, approval.DefaultPolicy(), nil, nil, nil, nil, repository.ModeOff, "", nil)
+	return newAgent(p, model, conversation, output, input, registry, approval.DefaultPolicy(), nil, nil, nil, nil, repository.ModeOff, "", nil, nil)
 }
 
 // NewWithPolicy constructs an Agent with an explicit Tool registry, a
@@ -107,7 +108,7 @@ func NewWithTools(p provider.Chat, model string, conversation *session.Session, 
 // exclusion patterns are gitignore-style globs applied in addition to any
 // .gitignore files when building the Repository Map on every Step.
 func NewWithPolicy(p provider.Chat, model string, conversation *session.Session, output io.Writer, input io.Reader, registry *tool.Registry, policy approval.Policy, exclude []string) *Agent {
-	return newAgent(p, model, conversation, output, input, registry, policy, nil, nil, exclude, nil, repository.ModeOff, "", nil)
+	return newAgent(p, model, conversation, output, input, registry, policy, nil, nil, exclude, nil, repository.ModeOff, "", nil, nil)
 }
 
 // NewWithActivity constructs an Agent with an explicit Tool registry, Approval
@@ -115,7 +116,7 @@ func NewWithPolicy(p provider.Chat, model string, conversation *session.Session,
 // embedding seam for observing the activity stream: a fake Sink records the
 // deterministic indicator transitions and change events across a Turn.
 func NewWithActivity(p provider.Chat, model string, conversation *session.Session, output io.Writer, input io.Reader, registry *tool.Registry, policy approval.Policy, exclude []string, sink activity.Sink) *Agent {
-	return newAgent(p, model, conversation, output, input, registry, policy, nil, nil, exclude, nil, repository.ModeOff, "", sink)
+	return newAgent(p, model, conversation, output, input, registry, policy, nil, nil, exclude, nil, repository.ModeOff, "", sink, nil)
 }
 
 // NewWithGit constructs an Agent with Git safety enabled. The Repository is a
@@ -125,7 +126,7 @@ func NewWithActivity(p provider.Chat, model string, conversation *session.Sessio
 // Checkpoints, stashes, Validation, external-change detection, and Agent
 // Commit attribution.
 func NewWithGit(p provider.Chat, model string, conversation *session.Session, output io.Writer, input io.Reader, registry *tool.Registry, policy approval.Policy, exclude []string, repo *repository.Repo, mode repository.Mode, validation string) *Agent {
-	return newAgent(p, model, conversation, output, input, registry, policy, nil, nil, exclude, repo, mode, validation, nil)
+	return newAgent(p, model, conversation, output, input, registry, policy, nil, nil, exclude, repo, mode, validation, nil, nil)
 }
 
 // NewWithSelection constructs an Agent whose Adapter comes from a Selection
@@ -135,13 +136,16 @@ func NewWithGit(p provider.Chat, model string, conversation *session.Session, ou
 // the caller changes the active Selection with SetSelection; the override is
 // recorded in the Session and restored on resume.
 func NewWithSelection(source SelectionSource, selection provider.Selection, conversation *session.Session, output io.Writer, input io.Reader, registry *tool.Registry, policy approval.Policy, exclude []string, repo *repository.Repo, mode repository.Mode, validation string) (*Agent, error) {
-	return NewWithSelectionAndActivity(source, selection, conversation, output, input, registry, policy, exclude, repo, mode, validation, nil)
+	return NewWithSelectionAndActivity(source, selection, conversation, output, input, registry, policy, exclude, repo, mode, validation, nil, nil)
 }
 
-// NewWithSelectionAndActivity is NewWithSelection with an activity Sink, for
-// renderers that consume the Activity Stream while Selection stays runtime-
-// switchable — the terminal UI in particular.
-func NewWithSelectionAndActivity(source SelectionSource, selection provider.Selection, conversation *session.Session, output io.Writer, input io.Reader, registry *tool.Registry, policy approval.Policy, exclude []string, repo *repository.Repo, mode repository.Mode, validation string, sink activity.Sink) (*Agent, error) {
+// NewWithSelectionAndActivity is NewWithSelection with an activity Sink and
+// the Session's instruction set, for renderers that consume the Activity
+// Stream while Selection stays runtime-switchable — the terminal UI in
+// particular. The instruction set is loaded once per Session and applied to
+// every Step of every Turn; a nil instruction set composes the plain Base
+// System Prompt.
+func NewWithSelectionAndActivity(source SelectionSource, selection provider.Selection, conversation *session.Session, output io.Writer, input io.Reader, registry *tool.Registry, policy approval.Policy, exclude []string, repo *repository.Repo, mode repository.Mode, validation string, sink activity.Sink, instructions *prompt.Instructions) (*Agent, error) {
 	if source == nil {
 		return nil, errors.New("selection source is required")
 	}
@@ -149,13 +153,13 @@ func NewWithSelectionAndActivity(source SelectionSource, selection provider.Sele
 	if err != nil {
 		return nil, err
 	}
-	agent := newAgent(adapter, selection.Model, conversation, output, input, registry, policy, nil, nil, exclude, repo, mode, validation, sink)
+	agent := newAgent(adapter, selection.Model, conversation, output, input, registry, policy, nil, nil, exclude, repo, mode, validation, sink, instructions)
 	agent.source = source
 	agent.selection = selection
 	return agent, nil
 }
 
-func newAgent(p provider.Chat, model string, conversation *session.Session, output io.Writer, input io.Reader, registry *tool.Registry, policy approval.Policy, gate approval.Decider, toolErr error, exclude []string, repo *repository.Repo, mode repository.Mode, validationCmd string, sink activity.Sink) *Agent {
+func newAgent(p provider.Chat, model string, conversation *session.Session, output io.Writer, input io.Reader, registry *tool.Registry, policy approval.Policy, gate approval.Decider, toolErr error, exclude []string, repo *repository.Repo, mode repository.Mode, validationCmd string, sink activity.Sink, instructions *prompt.Instructions) *Agent {
 	if output == nil {
 		output = io.Discard
 	}
@@ -197,6 +201,7 @@ func newAgent(p provider.Chat, model string, conversation *session.Session, outp
 		commitMode:    mode,
 		validationCmd: validationCmd,
 		sink:          sink,
+		instructions:  instructions,
 	}
 	if registry != nil && toolErr == nil {
 		builder, err := repomap.NewBuilder(registry.Root(), exclude)
@@ -403,7 +408,7 @@ func (a *Agent) Turn(ctx context.Context, request string) (TurnResult, error) {
 // Repository Map so every Step sees the current repository structure.
 func (a *Agent) systemPrompt() (string, error) {
 	if a.repoMap == nil {
-		return prompt.BuildSystemPrompt(""), nil
+		return prompt.BuildSystemPrompt("", a.instructions), nil
 	}
 	if a.repoMapErr != nil {
 		return "", fmt.Errorf("build repository map: %w", a.repoMapErr)
@@ -412,7 +417,7 @@ func (a *Agent) systemPrompt() (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("build repository map: %w", err)
 	}
-	return prompt.BuildSystemPrompt(repoMap), nil
+	return prompt.BuildSystemPrompt(repoMap, a.instructions), nil
 }
 
 // runTool gates a single Tool Call behind Approval and executes it, returning

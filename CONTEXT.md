@@ -24,6 +24,36 @@ One interaction with the Model within a Turn, including any tool requests it pro
 
 ---
 
+## System Prompt
+
+The instruction text the Agent sends with every Step. The System Prompt is assembled per Step from ordered layers: the Base System Prompt (or its System Prompt Override), the Global Instructions, the Project Instructions, the enabled Extensions' SYSTEM.md fragments, the Turn's purpose prompt or explicitly invoked Skill body when one is present, and finally the per-Step machinery — the Repository Map, the Skill catalog, and their truncation notes. Instruction layers are additive: Deku does not arbitrate conflicts between them, and the model weighs them. The machinery layer is never replaced, because it is per-Step input rather than voice. The System Prompt is content, not policy: it tells the model what to do, while Approval and the Tool registry decide what the Agent permits.
+
+---
+
+## Base System Prompt
+
+Deku's built-in instruction text, naming the agent and its core working behavior. The Base System Prompt is the first layer of the System Prompt and the only layer owned by the product; a System Prompt Override replaces it wholesale.
+
+---
+
+## Global Instructions
+
+The user's always-on instruction addition to the System Prompt, read from `AGENTS.md` in the Deku Home. Global Instructions express how the user wants to be worked with across projects. They layer before the Project Instructions, which are more specific to the current Repository.
+
+---
+
+## Project Instructions
+
+A Repository's always-on instruction addition to the System Prompt, read from `AGENTS.md` at the Repository root. Project Instructions express how the Repository wants to be worked on and apply to every Turn in that Repository. They are loaded regardless of Project Trust: they are Repository content, not policy, and cannot change Approval or any other safety behavior. Project Instructions are not Project Config.
+
+---
+
+## System Prompt Override
+
+A file at the Deku Home (`SYSTEM.md`) that replaces the Base System Prompt wholesale. An override removes the product's voice; every other layer — Global Instructions, Project Instructions, Extension SYSTEM.md fragments, the Turn's purpose prompt or invoked Skill body, and the machinery — is unaffected.
+
+---
+
 ## Session
 
 A persisted conversation between the user and the Agent. A Session has a unique ID, a creation timestamp, and a full Transcript. Sessions are append-only and immutable — once a Transcript entry is written, it is never modified.
@@ -168,7 +198,7 @@ A Command that runs the Agent as a Turn with a fixed purpose prompt and a purpos
 
 ## Skill
 
-A named instruction file that teaches the Agent how to perform a recurring task. A Skill is a markdown file with a JSON front matter block — the name and description — and a markdown body, living in `~/.deku/skills/<name>/` or a trusted project's `.deku/skills/`. Skills carry instructions only, never Tools. The Agent matches the current request against a catalog of Skill names and descriptions carried in the prompt and reads the Skill's body when it is relevant; the catalog is bounded by a token budget and truncated with a note when it exceeds it. The user may also invoke a Skill explicitly with the `/skill:<name>` Command. A project Skill of the same name replaces the global Skill. A Skill is not a Purpose Command: a Skill is user-authored content the Agent decides to use, while a Purpose Command is a product-defined experience the user invokes.
+A named instruction file that teaches the Agent how to perform a recurring task. A Skill is a markdown file with a JSON front matter block — the name and description — and a markdown body, living in `~/.deku/skills/<name>/` or a trusted project's `.deku/skills/`. Skills carry instructions only, never Tools. The Agent matches the current request against a catalog of Skill names and descriptions carried in the prompt and reads the Skill's body when it is relevant; the catalog is bounded by a token budget and truncated with a note when it exceeds it. The user may also invoke a Skill explicitly with the `/skill:<name>` Command. A project Skill of the same name replaces the global Skill. A Skill is not a Purpose Command: a Skill is user-authored content the Agent decides to use, while a Purpose Command is a product-defined experience the user invokes. A Skill is not Global Instructions or Project Instructions: instruction files are always-on, while a Skill applies only when the Agent selects it or the user invokes it.
 
 ---
 
@@ -357,7 +387,7 @@ The single per-user directory that owns all of Deku's durable state and configur
 
 ## Project Config
 
-Configuration that lives inside a Repository and overrides the Deku Home configuration for that project. Project Config is loaded only after the user grants the project Trust. It is where a project agrees on shared behavior such as Approval policy and Repository Map exclusions.
+Configuration that lives inside a Repository and overrides the Deku Home configuration for that project. Project Config is loaded only after the user grants the project Trust. It is where a project agrees on shared behavior such as Approval policy and Repository Map exclusions. Project Config is policy, not instructions: it changes what the Agent permits, never what the model is told. It is distinct from Project Instructions (AGENTS.md), which are repository content and load regardless of Trust.
 
 ---
 
@@ -369,7 +399,7 @@ The order in which configuration sources combine: built-in defaults, then the De
 
 ## Project Trust
 
-The user's decision to load a Repository's Project Config and any project-local resources. Project Config is not loaded until the project is trusted, because it can change safety behavior such as Approval policy. Untrusted projects are ignored.
+The user's decision to load a Repository's Project Config and any project-local resources. Trust gates everything under the Repository's `.deku/` directory — Project Config, project Skills, and other Deku-local resources — because those can change safety behavior such as Approval policy. Repository-root content such as Project Instructions (`AGENTS.md`) loads regardless of Trust. Untrusted projects are ignored.
 
 ---
 

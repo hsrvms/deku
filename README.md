@@ -48,6 +48,7 @@ Use the platform's equivalent checksum and archive tools where `sha256sum`, `tar
 - [Vision](docs/vision.md)
 - [Roadmap](docs/roadmap.md)
 - [Configuration reference](docs/reference/configuration.md)
+- [System prompt instruction files](docs/guides/instruction-files.md)
 - [Specifications](docs/specs/README.md)
 - [Architecture decisions](docs/adr/)
 - [Domain glossary](CONTEXT.md)
