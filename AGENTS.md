@@ -83,7 +83,7 @@ For every change, perform a documentation-impact review before completion:
 1. Update the active spec in `docs/specs/` when committed scope, acceptance criteria, supported behavior, or an implementation decision changes. Do not rewrite historical decisions merely to match code; record a superseding decision where appropriate.
 2. Update `CONTEXT.md` immediately when a domain term is introduced, resolved, or materially sharpened. Keep it a glossary: definitions only, no implementation details or plans.
 3. Create an ADR in `docs/adr/` only when a decision is hard to reverse, surprising without context, and chosen among real alternatives.
-4. Update user-facing documentation under `docs/guides/` or `docs/reference/` when a user-visible command, configuration option, workflow, compatibility guarantee, or safety behavior changes.
+4. Update the user guides in `docs/guides/` — and reference material in `docs/reference/` — for every implementation that adds or changes user-visible behavior. A user-visible workflow ships with a guide: create a new guide when a behavior first becomes user-visible (the instruction-file guide is the pattern), and update the existing guide in the same change as the behavior it documents, so no guide ever lags its implementation. When a change touches no user-visible behavior, state that in the work summary instead of updating a guide.
 5. Update `docs/roadmap.md` when an item is accepted, released, deferred, or superseded. A roadmap item needs its own full spec before implementation begins.
 6. Update `README.md` when the project status, supported installation path, or quick start changes.
 
