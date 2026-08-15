@@ -1,7 +1,7 @@
 -include .env
 export
 
-.PHONY: build test test-race vet mod-verify fmt fmt-check lint run clean cover dev install-dev release-dry-run ci all
+.PHONY: build test test-race vet mod-verify fmt fmt-check lint run clean cover dev install-dev release-dry-run ci all devcontainer-up devcontainer-down
 
 BINARY := deku
 MODULE := github.com/hsrvms/deku
@@ -63,3 +63,9 @@ release-dry-run:
 ci: fmt-check mod-verify vet test test-race lint build
 
 all: fmt vet test build
+
+devcontainer-up:
+	devcontainer up --remove-existing-container
+
+devcontainer-down:
+	docker compose -f .devcontainer/docker-compose.yml down
