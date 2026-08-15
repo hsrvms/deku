@@ -9,6 +9,7 @@ services:
         USER_UID: ${DEV_UID:-1000}
         USER_GID: ${DEV_GID:-1000}
     init: true
+    env_file: .env
     command: sleep infinity
     volumes:
       - ..:/workspace
