@@ -693,7 +693,7 @@ func TestProgramLoopStreamsRealAgentTurnEndToEnd(t *testing.T) {
 	defer func() { _ = approvalReader.Close() }()
 	m := New("tokenrouter", "qwen-2.5-coder", approvalWriter)
 	source := &scriptedSource{adapter: providerStub}
-	runner, err := agent.NewWithSelectionAndActivity(source, provider.Selection{Provider: "tokenrouter", Model: "qwen-2.5-coder"}, conversation, m, approvalReader, registry, approval.DefaultPolicy(), nil, nil, repository.ModeOff, "", m)
+	runner, err := agent.NewWithSelectionAndActivity(source, provider.Selection{Provider: "tokenrouter", Model: "qwen-2.5-coder"}, conversation, m, approvalReader, registry, approval.DefaultPolicy(), nil, nil, repository.ModeOff, "", m, nil)
 	if err != nil {
 		t.Fatalf("NewWithSelectionAndActivity() error = %v", err)
 	}

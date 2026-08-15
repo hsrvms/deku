@@ -10,12 +10,14 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 	"strings"
 
 	"github.com/hsrvms/deku/agent"
 	"github.com/hsrvms/deku/approval"
 	"github.com/hsrvms/deku/config"
 	"github.com/hsrvms/deku/lineio"
+	"github.com/hsrvms/deku/prompt"
 	"github.com/hsrvms/deku/provider"
 	"github.com/hsrvms/deku/repository"
 	"github.com/hsrvms/deku/session"
@@ -78,6 +80,24 @@ func run(args []string, input io.Reader, output, errorOutput io.Writer) int {
 		if err := writeError(errorOutput, "deku: project config found at %s/.deku but this project is not trusted; add %s to ~/.deku/trusted_projects.json to load it\n", cfg.Project.Root, cfg.Project.Root); err != nil {
 			return 1
 		}
+	}
+	// Instruction files are loaded once per process, after Trust resolution,
+	// and the same set applies to every Step of every Turn of the Session.
+	// A root AGENTS.md is repository content and loads regardless of Trust;
+	// only the Deku Home files are gated by nothing at all (ADR-0014).
+	home, err := os.UserHomeDir()
+	if err != nil {
+		if writeErr := writeError(errorOutput, "deku: resolve home directory: %v\n", err); writeErr != nil {
+			return 1
+		}
+		return 1
+	}
+	instructions, err := prompt.LoadInstructions(filepath.Join(home, ".deku"), cfg.Project.Root, cfg.Project.Trusted)
+	if err != nil {
+		if writeErr := writeError(errorOutput, "deku: %v\n", err); writeErr != nil {
+			return 1
+		}
+		return 1
 	}
 	store, err := session.DefaultStore()
 	if err != nil {
@@ -147,9 +167,9 @@ func run(args []string, input io.Reader, output, errorOutput io.Writer) int {
 		}
 	}
 	if tui.Active(lineio.IsTerminal(output), os.Getenv("TERM"), os.Getenv("NO_COLOR")) {
-		return runTUI(providers, selection, conversation, registry, policy, cfg.RepoMap.Exclude, repo, commitMode, cfg.AgentCommits.Validation, errorOutput)
+		return runTUI(providers, selection, conversation, registry, policy, cfg.RepoMap.Exclude, repo, commitMode, cfg.AgentCommits.Validation, instructions, errorOutput)
 	}
-	runner, err := agent.NewWithSelection(providers, selection, conversation, output, input, registry, policy, cfg.RepoMap.Exclude, repo, commitMode, cfg.AgentCommits.Validation)
+	runner, err := agent.NewWithSelectionAndActivity(providers, selection, conversation, output, input, registry, policy, cfg.RepoMap.Exclude, repo, commitMode, cfg.AgentCommits.Validation, nil, instructions)
 	if err != nil {
 		if writeErr := writeError(errorOutput, "deku: %v\n", err); writeErr != nil {
 			return 1
@@ -285,10 +305,12 @@ func runConversation(runner *agent.Agent, providers *provider.Registry, input io
 // with the shell as its output Writer and activity Sink and with an approval
 // pipe as its input, so Approval decisions typed into the input line reach
 // the waiting gate without either side touching the raw terminal directly.
-func runTUI(providers *provider.Registry, selection provider.Selection, conversation *session.Session, registry *tool.Registry, policy approval.Policy, exclude []string, repo *repository.Repo, mode repository.Mode, validation string, errorOutput io.Writer) int {
+// The instruction set is the Session's: loaded once and applied to every
+// Step of every Turn.
+func runTUI(providers *provider.Registry, selection provider.Selection, conversation *session.Session, registry *tool.Registry, policy approval.Policy, exclude []string, repo *repository.Repo, mode repository.Mode, validation string, instructions *prompt.Instructions, errorOutput io.Writer) int {
 	approvalReader, approvalWriter := io.Pipe()
 	shell := tui.New(selection.Provider, selection.Model, approvalWriter)
-	runner, err := agent.NewWithSelectionAndActivity(providers, selection, conversation, shell, approvalReader, registry, policy, exclude, repo, mode, validation, shell)
+	runner, err := agent.NewWithSelectionAndActivity(providers, selection, conversation, shell, approvalReader, registry, policy, exclude, repo, mode, validation, shell, instructions)
 	if err != nil {
 		if writeErr := writeError(errorOutput, "deku: %v\n", err); writeErr != nil {
 			return 1

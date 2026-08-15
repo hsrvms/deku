@@ -16,7 +16,7 @@ v1 adds one **extension** module: a directory package (`~/.deku/extensions/<name
 
 The **provider** module gains a second Adapter family: **Anthropic Messages**, authenticated by API key, with the `Chat` interface unchanged. The **Repository Map** becomes tree-sitter based: symbol signatures for supported languages, ranked by term overlap with the current request when the repository exceeds the token budget, stable within a Turn. The CLI dispatches **Purpose Commands** (`/review`, `/explain`, `/commit`) that run the Agent as a Turn with a fixed purpose prompt and a purpose-scoped Tool set, and **Skills** (`~/.deku/skills/<name>/SKILL.md`, JSON front matter) that the Agent loads from a budgeted catalog when a request matches, or that the user invokes with `/skill:<name>`. The **terminal UI** renders the activity seam as panes — Transcript, cumulative Turn Diff, status bar with Working Indicator, and a vim-mode modeless input line — with the Approval prompt in the input area, per the design guide in `docs/guides/tui-design.md`.
 
-**Acceptance statement:** with v1, a developer can drop a script-backed extension into `~/.deku/extensions/`, enable it in `settings.json`, and have the model call its Tool in a completed Turn with Approval, Command Report, Tool Output, and Transcript recording working exactly as for built-ins; can run `/review` and observe a Turn whose Tool set is read-only; can load a Skill automatically and explicitly; and can watch a Turn's cumulative diff live in the TUI with the Working Indicator showing thinking, working, and awaiting Approval. The non-TTY inline renderer keeps working unchanged.
+**Acceptance statement:** with v1, a developer can drop a script-backed extension into `~/.deku/extensions/`, enable it in `settings.json`, and have the model call its Tool in a completed Turn with Approval, Command Report, Tool Output, and Transcript recording working exactly as for built-ins; can run `/review` and observe a Turn whose Tool set is read-only; can load a Skill automatically and explicitly; can have the user's Global Instructions and System Prompt Override applied and the repository's Project Instructions; and can watch a Turn's cumulative diff live in the TUI with the Working Indicator showing thinking, working, and awaiting Approval. The non-TTY inline renderer keeps working unchanged.
 
 ## User Stories
 
@@ -61,17 +61,25 @@ The **provider** module gains a second Adapter family: **Anthropic Messages**, a
 25. As a developer, I want a project Skill of the same name to replace the global Skill, and duplicate names within one scope to fail fast at discovery naming the file, so that precedence is predictable.
 26. As a developer, I want a Skill to carry instructions only, never Tools, so that Skills cannot become a second extension mechanism.
 
+### System prompt customization
+
+27. As a developer, I want my own always-on instructions appended to the system prompt from `AGENTS.md` in the Deku Home, so that my working preferences apply in every project.
+
+28. As a developer, I want to replace Deku's built-in system prompt wholesale with `SYSTEM.md` in the Deku Home, so that the agent speaks with my voice.
+
+29. As a developer, I want a Repository's root `AGENTS.md` loaded as always-on instructions for every Turn in that Repository regardless of Project Trust, so that repository conventions apply without trusting the project.
+
 ### Terminal UI
 
-27. As a developer, I want a terminal UI in a TTY rendering the activity seam as panes — Transcript, cumulative Turn Diff, status bar, and input line — with the inline renderer unchanged as the non-TTY fallback, so that I can watch Agent work live without losing the pipe and CI path.
-28. As a developer, I want to type while the Agent works: input is always active, `Enter` queues a message as the next Turn while one runs, and `Ctrl+C` interrupts the running Turn (clearing the input when idle), so that I never wait for the Agent to type.
-29. As a developer, I want the Working Indicator in the status bar (thinking, working, awaiting Approval) with label, glyph, and color, so that the state is visible and never color-only.
-30. As a developer, I want the Turn Diff pane to auto-open on the first change of a Turn and show the cumulative per-file working-tree diff of the Turn's Edits and Writes, so that I see the net effect, not per-edit snapshots.
-31. As a developer, I want Approval to render in the input area as the Command Report prompt while the status bar shows awaiting Approval, so that I approve the exact action without an overlay stealing focus.
-32. As a developer, I want vim-mode editing on the input line (Esc, i/a/A, h/l/0/$, w/b, x, dd, j/k history), so that editing matches my muscle memory.
-33. As a developer, I want `Ctrl+P` to open the model Palette — an interactive, filterable list of Models grouped by Provider with the current Selection marked — so that switching Models is keyboard-driven.
-34. As a developer, I want `?` to show the keybinding help, `Ctrl+E`/`Ctrl+Y` to scroll the Transcript from any mode, and the Turn Diff pane toggleable, so that the small binding set is discoverable.
-35. As a developer, I want colors from semantic tokens only, `NO_COLOR` and `TERM=dumb` respected, and no state conveyed by color alone, so that the UI is accessible and environment-safe.
+30. As a developer, I want a terminal UI in a TTY rendering the activity seam as panes — Transcript, cumulative Turn Diff, status bar, and input line — with the inline renderer unchanged as the non-TTY fallback, so that I can watch Agent work live without losing the pipe and CI path.
+31. As a developer, I want to type while the Agent works: input is always active, `Enter` queues a message as the next Turn while one runs, and `Ctrl+C` interrupts the running Turn (clearing the input when idle), so that I never wait for the Agent to type.
+32. As a developer, I want the Working Indicator in the status bar (thinking, working, awaiting Approval) with label, glyph, and color, so that the state is visible and never color-only.
+33. As a developer, I want the Turn Diff pane to auto-open on the first change of a Turn and show the cumulative per-file working-tree diff of the Turn's Edits and Writes, so that I see the net effect, not per-edit snapshots.
+34. As a developer, I want Approval to render in the input area as the Command Report prompt while the status bar shows awaiting Approval, so that I approve the exact action without an overlay stealing focus.
+35. As a developer, I want vim-mode editing on the input line (Esc, i/a/A, h/l/0/$, w/b, x, dd, j/k history), so that editing matches my muscle memory.
+36. As a developer, I want `Ctrl+P` to open the model Palette — an interactive, filterable list of Models grouped by Provider with the current Selection marked — so that switching Models is keyboard-driven.
+37. As a developer, I want `?` to show the keybinding help, `Ctrl+E`/`Ctrl+Y` to scroll the Transcript from any mode, and the Turn Diff pane toggleable, so that the small binding set is discoverable.
+38. As a developer, I want colors from semantic tokens only, `NO_COLOR` and `TERM=dumb` respected, and no state conveyed by color alone, so that the UI is accessible and environment-safe.
 
 ## Implementation Decisions
 
@@ -98,7 +106,14 @@ The **provider** module gains a second Adapter family: **Anthropic Messages**, a
 
 ### Skills
 
-- The **skills** module discovers `~/.deku/skills/<name>/SKILL.md` (and a trusted project's `.deku/skills/`) at startup and on trust grant. Each Skill is a markdown body with a JSON front matter block (`name`, `description`). A malformed front matter or a duplicate name within one scope fails fast naming the file; a project Skill replaces a same-named global Skill. The prompt carries a catalog of names and descriptions bounded by a token budget (default 500 tokens) and truncated with a note when it exceeds it; the catalog is built once per Session. The Agent reads Skill bodies with the existing `read` Tool when the request matches; `/skill:<name>` injects the named Skill's body into the next Turn. Skills carry no Tools, and v1 defines no interaction between Purpose Commands and Skills.
+- The **skills** module discovers `~/.deku/skills/<name>/SKILL.md` (and a trusted project's `.deku/skills/`) at startup and on trust grant. Each Skill is a markdown body with a JSON front matter block (`name`, `description`). A malformed front matter or a duplicate name within one scope fails fast naming the file; a project Skill replaces a same-named global Skill. The prompt carries a catalog of names and descriptions bounded by a token budget (default 500 tokens) and truncated with a note when it exceeds it; the catalog is built once per Session. The Agent reads Skill bodies with the existing `read` Tool when the request matches; `/skill:<name>` injects the named Skill's body into the next Turn. Skills carry no Tools. Model-selected Skills work inside Purpose Command Turns because their read-only tool sets include `read`; `/skill:<name>` is always its own Turn.
+
+### System prompt customization
+
+- The system prompt is assembled per Step from ordered layers: the Base System Prompt (or its System Prompt Override), the Global Instructions, the Project Instructions, the enabled Extensions' SYSTEM.md fragments, the Turn's purpose prompt or explicitly invoked Skill body when present, and the machinery — the Repository Map with its instruction, the Skill catalog, and truncation notes. Instruction layers are additive; Deku does not arbitrate conflicts between them. An override replaces only the Base System Prompt; every other layer is untouched, and the machinery layer is never replaced.
+- The instruction files are `AGENTS.md` in the Deku Home (Global Instructions), `SYSTEM.md` in the Deku Home (System Prompt Override), and `AGENTS.md` at the Repository root (Project Instructions). A missing file is simply absent. Instruction files are read at Session start and on trust grant, cached for the Session — the same timing as Skill discovery and the Skill catalog. They carry no token budget and are never truncated; their authors control their size.
+- Project Instructions load regardless of Project Trust: a root `AGENTS.md` is repository content, not policy. Trust continues to gate everything under the Repository's `.deku/` directory, including project Skills. Instruction files cannot change Approval policy, tool availability, or any safety behavior.
+- Purpose Command Turns include every instruction layer; `/review` and `/explain` tool sets include `read`, so model-selected Skills keep working inside them.
 
 ### Terminal UI
 
@@ -117,6 +132,7 @@ The **provider** module gains a second Adapter family: **Anthropic Messages**, a
 - The **provider** module keeps its adapter-specific contract seam: the Anthropic Messages Adapter is tested against a controlled HTTP server speaking the Anthropic wire format — streaming Event normalization, `tool_use` translation, deltas, malformed responses, and errors.
 - Purpose Commands are tested at the Agent seam: `/review` and `/explain` observe a read-only Tool set (a mutation attempt is refused by the registry, not by the model); `/commit` observes Validation, Agent Commit contents, refusal on external changes, and the nothing-to-commit report.
 - Skills are tested through prompt assembly (catalog injection, budget truncation note), explicit `/skill:<name>` invocation, project-over-global replacement, and fail-fast discovery errors.
+- System prompt customization is tested through prompt assembly (layer order, override replacing only the base, addition and override coexistence) and completed Turns in a real temporary repository: a project `AGENTS.md` is injected for trusted and untrusted repositories alike, and Deku Home `AGENTS.md` and `SYSTEM.md` apply globally.
 - The TUI is tested as bubbletea models with injected key events and in-memory sinks: pane state transitions, keybinding dispatch (queue on Enter while working, interrupt on `Ctrl+C`, Palette open/select/close, diff toggle), cumulative Turn Diff rendering from Change events, Approval prompt rendering in the input area, the idle indicator after a completed Turn, Tool Output and Command Report block rendering from injected events, user-message alignment and exchange/block separators, and the non-TTY fallback path (existing inline tests continue to pass). Tests assert rendered strings and state, not ANSI details.
 - No test asserts private implementation details; all cases observe externally visible behavior through the seams above.
 
@@ -128,12 +144,13 @@ The **provider** module gains a second Adapter family: **Anthropic Messages**, a
 - Agent-authored Extensions and their review or distribution workflow.
 - Project-scope Extensions (project `.deku/extensions/`).
 - Skills distribution, sharing, or discovery beyond the local filesystem.
+- Project-scope system prompt override files, and a configuration toggle to disable instruction file loading.
 - Context Window summarization and Repository Memory.
 - Themes and user-configurable color palettes; the v1 color baseline is the fixed semantic token set.
 
 ## Further Notes
 
-- Governed by ADRs `0011-extension-tool-kinds` (superseding `0002`), `0012-repository-map-ranking` (partially superseding `0001`), `0013-skills`, `0010-terminal-activity-display`, `0009-approval-transparency`, and `0008-provider-registry-and-selection` (v1 scope note). The terminal UI is governed by the design guide `docs/guides/tui-design.md`, which `AGENTS.md` requires reading before TUI work.
+- Governed by ADRs `0011-extension-tool-kinds` (superseding `0002`), `0012-repository-map-ranking` (partially superseding `0001`), `0013-skills`, `0014-user-and-project-instruction-layers` (extending `0013`), `0010-terminal-activity-display`, `0009-approval-transparency`, and `0008-provider-registry-and-selection` (v1 scope note). The terminal UI is governed by the design guide `docs/guides/tui-design.md`, which `AGENTS.md` requires reading before TUI work.
 - The settings module's `extensions` section and the extension manifest schema are resolved in this specification; the exact Anthropic-supported model compatibility matrix remains an implementation-level concern to document before release.
 - The Release pipeline gains CGO-enabled builds when v1 releases; the release runbook must reflect that change at release time.
-- Implementation order: Extension module (External Tools first, then MCP bridging), Repository Map intelligence, Skills and Purpose Commands, Anthropic Messages Adapter, then the terminal UI last, since it renders the seams the earlier items complete. This order is a constraint on sequencing, not a change of scope.
+- Implementation order: Extension module (External Tools first, then MCP bridging), Repository Map intelligence, Skills, Purpose Commands, and system prompt instruction files, Anthropic Messages Adapter, then the terminal UI last, since it renders the seams the earlier items complete. This order is a constraint on sequencing, not a change of scope.
